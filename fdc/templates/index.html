@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Artillery FCS — Fire Direction Center</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Courier New', monospace;
+    background: #0a0f0a;
+    color: #39ff14;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Top Bar ── */
+  #topbar {
+    background: #0d1a0d;
+    border-bottom: 1px solid #1a3a1a;
+    padding: 6px 16px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-shrink: 0;
+  }
+  #topbar h1 {
+    font-size: 14px;
+    color: #7fff00;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+  }
+  .status-pill {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 2px;
+    border: 1px solid currentColor;
+  }
+  .pill-green  { color: #39ff14; border-color: #39ff14; }
+  .pill-red    { color: #ff3c3c; border-color: #ff3c3c; }
+  .pill-yellow { color: #ffd700; border-color: #ffd700; }
+
+  @keyframes pulse {
+    0%,100% { opacity:1; transform:scale(1); }
+    50%      { opacity:0.4; transform:scale(1.4); }
+  }
+
+  /* ── Main Layout ── */
+  #main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ── Left Panel ── */
+  #left {
+    width: 280px;
+    background: #0d1a0d;
+    border-right: 1px solid #1a3a1a;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    flex-shrink: 0;
+  }
+
+  .panel-header {
+    padding: 8px 12px;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: #7fff00;
+    border-bottom: 1px solid #1a3a1a;
+    background: #111f11;
+    text-transform: uppercase;
+  }
+
+  /* ── FDC Position ── */
+  #fdc-pos {
+    padding: 10px 12px;
+    border-bottom: 1px solid #1a3a1a;
+    font-size: 12px;
+  }
+  #fdc-pos span { color: #aaa; }
+  #fdc-pos b   { color: #39ff14; }
+
+  /* ── Gun Cards ── */
+  .gun-card {
+    padding: 10px 12px;
+    border-bottom: 1px solid #1a3a1a;
+    font-size: 11px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .gun-card:hover       { background: #142014; }
+  .gun-card.selected    { background: #1a2e1a; border-left: 3px solid #39ff14; }
+  .gun-card.dead        { opacity: 0.4; }
+
+  .gun-title {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 4px;
+  }
+  .gun-name { font-size: 13px; font-weight: bold; color: #7fff00; }
+  .gun-alive { font-size: 10px; }
+
+  .gun-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px;
+  }
+  .gun-grid span { color: #888; }
+  .gun-grid b    { color: #cfc; }
+
+  .gun-actions { margin-top: 6px; display: flex; gap: 6px; }
+  .btn-sm {
+    font-family: 'Courier New', monospace;
+    font-size: 10px;
+    padding: 2px 8px;
+    background: transparent;
+    border: 1px solid #3a6a3a;
+    color: #39ff14;
+    cursor: pointer;
+    border-radius: 2px;
+  }
+  .btn-sm:hover { background: #1a3a1a; }
+
+  /* ── Log ── */
+  #log-panel { flex: 1; display: flex; flex-direction: column; min-height: 120px; }
+  #log-entries {
+    flex: 1;
+    overflow-y: auto;
+    padding: 6px 10px;
+    font-size: 10px;
+    line-height: 1.6;
+  }
+  .log-info  { color: #7cb97c; }
+  .log-error { color: #ff5555; }
+  .log-fire  { color: #ffd700; font-weight: bold; }
+
+  /* ── Map ── */
+  #map-wrap {
+    flex: 1;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+  #map { flex: 1; background: #0a0f0a; }
+
+  /* Custom Leaflet dark style */
+  .leaflet-container { background: #111a11; }
+
+  /* ── Fire Mission Panel (right) ── */
+  #right {
+    width: 260px;
+    background: #0d1a0d;
+    border-left: 1px solid #1a3a1a;
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    overflow-y: auto;
+  }
+
+  /* ── Form ── */
+  .form-group {
+    padding: 8px 12px;
+    border-bottom: 1px solid #1a3a1a;
+  }
+  .form-group label {
+    display: block;
+    font-size: 10px;
+    color: #888;
+    margin-bottom: 3px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  .form-group input,
+  .form-group select {
+    width: 100%;
+    background: #070e07;
+    border: 1px solid #2a4a2a;
+    color: #39ff14;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    padding: 5px 8px;
+    border-radius: 2px;
+    outline: none;
+  }
+  .form-group input:focus { border-color: #39ff14; }
+
+  /* Target coords clickable label */
+  #tgt-label {
+    font-size: 10px;
+    color: #ffd700;
+    padding: 6px 12px;
+    border-bottom: 1px solid #1a3a1a;
+  }
+
+  /* Solution box */
+  #solution {
+    padding: 10px 12px;
+    border-bottom: 1px solid #1a3a1a;
+    font-size: 11px;
+    background: #070e07;
+  }
+  .sol-row {
+    display: flex;
+    justify-content: space-between;
+    margin: 3px 0;
+  }
+  .sol-row span { color: #888; }
+  .sol-row b    { color: #ffd700; font-size: 14px; }
+
+  .btn-fire {
+    margin: 10px 12px;
+    width: calc(100% - 24px);
+    padding: 10px;
+    background: #3a0000;
+    border: 2px solid #cc0000;
+    color: #ff5555;
+    font-family: 'Courier New', monospace;
+    font-size: 14px;
+    font-weight: bold;
+    letter-spacing: 3px;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: all 0.15s;
+  }
+  .btn-fire:hover   { background: #600000; border-color: #ff0000; color: #ff8888; }
+  .btn-fire:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  .btn-calc {
+    margin: 6px 12px 0;
+    width: calc(100% - 24px);
+    padding: 7px;
+    background: transparent;
+    border: 1px solid #3a6a3a;
+    color: #39ff14;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    cursor: pointer;
+    border-radius: 2px;
+  }
+  .btn-calc:hover { background: #1a2e1a; }
+
+  /* Map coord display */
+  #coord-bar {
+    background: rgba(0,0,0,0.7);
+    padding: 3px 8px;
+    font-size: 10px;
+    color: #7fff00;
+    letter-spacing: 1px;
+  }
+
+  /* Map markers */
+  .fdc-icon, .gun-icon, .tgt-icon { text-align: center; font-weight: bold; }
+
+  /* Mode indicator */
+  #mode-bar {
+    padding: 4px 12px;
+    font-size: 11px;
+    border-bottom: 1px solid #1a3a1a;
+    background: #0a150a;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+  .mode-btn {
+    padding: 2px 10px;
+    font-family: 'Courier New', monospace;
+    font-size: 10px;
+    background: transparent;
+    border: 1px solid #3a6a3a;
+    color: #888;
+    cursor: pointer;
+    border-radius: 2px;
+  }
+  .mode-btn.active { background: #1a3a1a; color: #39ff14; border-color: #39ff14; }
+</style>
+</head>
+<body>
+
+<!-- Top Bar -->
+<div id="topbar">
+  <h1>⊕ Artillery FCS — Phase 2</h1>
+  <span class="status-pill pill-yellow" id="radio-pill">RADIO: INIT</span>
+  <span class="status-pill pill-yellow" id="gps-pill">FDC GPS: NO FIX</span>
+  <span class="status-pill pill-green" id="guns-pill">GUNS: 0/4</span>
+  <span style="margin-left:auto;font-size:11px;color:#555" id="clock"></span>
+</div>
+
+<div id="main">
+
+  <!-- Left Panel -->
+  <div id="left">
+    <div class="panel-header">◈ FDC Position</div>
+    <div id="fdc-pos">
+      <div><span>LAT </span><b id="fdc-lat">--</b></div>
+      <div><span>LON </span><b id="fdc-lon">--</b></div>
+      <div><span>ALT </span><b id="fdc-alt">--</b><span> m</span></div>
+      <div><span>FIX </span><b id="fdc-fix">--</b><span> | SATS </span><b id="fdc-sats">--</b></div>
+    </div>
+
+    <div class="panel-header">◈ Gun Units</div>
+    <div id="gun-cards"></div>
+
+    <div class="panel-header" id="log-panel">◈ Event Log</div>
+    <div id="log-entries"></div>
+  </div>
+
+  <!-- Map -->
+  <div id="map-wrap">
+    <div id="mode-bar">
+      <span style="color:#888;font-size:10px">MAP MODE:</span>
+      <button class="mode-btn active" id="mode-view" onclick="setMode('view')">VIEW</button>
+      <button class="mode-btn" id="mode-target" onclick="setMode('target')">SET TARGET</button>
+      <button class="mode-btn" id="mode-gun" onclick="setMode('gun')">MOVE GUN</button>
+    </div>
+    <div id="map"></div>
+    <div id="coord-bar">Click map for coordinates | Mode: <span id="mode-label">VIEW</span></div>
+  </div>
+
+  <!-- Right Panel: Fire Mission -->
+  <div id="right">
+    <div class="panel-header">◈ Fire Mission</div>
+
+    <div class="form-group">
+      <label>Select Gun</label>
+      <select id="fm-gun">
+        <option value="1">Gun #1</option>
+        <option value="2">Gun #2</option>
+        <option value="3">Gun #3</option>
+        <option value="4">Gun #4</option>
+      </select>
+    </div>
+
+    <div id="tgt-label">⊕ Click map in TARGET mode to set coords</div>
+
+    <div class="form-group">
+      <label>Target Latitude</label>
+      <input type="number" id="fm-lat" placeholder="14.0000" step="0.0001">
+    </div>
+    <div class="form-group">
+      <label>Target Longitude</label>
+      <input type="number" id="fm-lon" placeholder="101.0000" step="0.0001">
+    </div>
+    <div class="form-group">
+      <label>Target Name</label>
+      <input type="text" id="fm-name" placeholder="TGT-001" value="TGT-001">
+    </div>
+    <div class="form-group">
+      <label>Charge (1-8 / Auto)</label>
+      <select id="fm-charge">
+        <option value="">AUTO</option>
+        <option value="1">1</option><option value="2">2</option>
+        <option value="3">3</option><option value="4">4</option>
+        <option value="5">5</option><option value="6">6</option>
+        <option value="7">7</option><option value="8">8</option>
+      </select>
+    </div>
+
+    <button class="btn-calc" onclick="calcFire()">⊕ CALCULATE</button>
+
+    <!-- Solution display -->
+    <div id="solution" style="display:none">
+      <div class="sol-row"><span>AZIMUTH</span>    <b id="sol-az">--</b></div>
+      <div class="sol-row"><span>ELEVATION</span>  <b id="sol-el">--</b></div>
+      <div class="sol-row"><span>RANGE</span>      <b id="sol-range">--</b></div>
+      <div class="sol-row"><span>CHARGE</span>     <b id="sol-chg">--</b></div>
+      <div class="sol-row"><span>DRIFT</span>      <b id="sol-drift">--</b></div>
+    </div>
+
+    <button class="btn-fire" id="btn-fire" disabled onclick="sendFire()">
+      ◈ FIRE ◈
+    </button>
+
+    <div class="panel-header" style="margin-top:8px">◈ Last Solution</div>
+    <div id="last-fire" style="padding:8px 12px;font-size:10px;color:#666">None</div>
+  </div>
+
+</div>
+
+<script>
+// ============================================================
+//  State
+// ============================================================
+const gs = {
+  fdc:    { lat:0, lon:0, fix:0, sats:0, valid:false },
+  guns:   { 1:{}, 2:{}, 3:{}, 4:{} },
+  targets: {},
+  mode:   'view',
+  selectedGun: 1,
+  pendingSolution: null
+};
+
+// Map markers
+let fdcMarker  = null;
+let gunMarkers = {};
+let tgtMarkers = {};
+let clickMarker = null;
+
+// ============================================================
+//  Leaflet Map
+// ============================================================
+const map = L.map('map', {
+  center: [13.7563, 100.5018],
+  zoom: 10,
+  zoomControl: true
+});
+
+// Use OSM tiles — swap for offline tiles in production
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: 'OSM',
+  maxZoom: 18,
+  className: 'dark-tiles'
+}).addTo(map);
+
+// Darken tiles with CSS filter
+const style = document.createElement('style');
+style.innerHTML = `.dark-tiles { filter: invert(100%) hue-rotate(180deg) brightness(0.7) contrast(1.2); }`;
+document.head.appendChild(style);
+
+// Coordinate bar
+map.on('mousemove', e => {
+  document.getElementById('coord-bar').innerHTML =
+    `LAT ${e.latlng.lat.toFixed(5)}  LON ${e.latlng.lng.toFixed(5)} | Mode: <span id="mode-label">${gs.mode.toUpperCase()}</span>`;
+});
+
+// Map click handler
+map.on('click', e => {
+  const {lat, lng} = e.latlng;
+  if (gs.mode === 'target') {
+    document.getElementById('fm-lat').value = lat.toFixed(6);
+    document.getElementById('fm-lon').value = lng.toFixed(6);
+    // Preview marker
+    if (clickMarker) map.removeLayer(clickMarker);
+    clickMarker = L.marker([lat, lng], {
+      icon: L.divIcon({
+        html: '<div style="color:#ff3;font-size:20px;font-weight:bold">✕</div>',
+        iconSize:[20,20], iconAnchor:[10,10]
+      })
+    }).addTo(map).bindPopup(`Target: ${lat.toFixed(5)}, ${lng.toFixed(5)}`).openPopup();
+  }
+});
+
+// ============================================================
+//  Mode control
+// ============================================================
+function setMode(m) {
+  gs.mode = m;
+  document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('mode-' + m).classList.add('active');
+  document.getElementById('mode-label').textContent = m.toUpperCase();
+  map.getContainer().style.cursor = m === 'view' ? '' : 'crosshair';
+}
+
+// ============================================================
+//  SSE Connection
+// ============================================================
+function connectSSE() {
+  const es = new EventSource('/api/stream');
+
+  es.addEventListener('init', e => {
+    const data = JSON.parse(e.data);
+    updateFdc(data.fdc);
+    Object.values(data.guns).forEach(g => updateGun(g));
+    Object.values(data.targets).forEach(t => updateTarget(t));
+    data.log.forEach(addLog);
+    document.getElementById('radio-pill').textContent = 'RADIO: CONNECTED';
+    document.getElementById('radio-pill').className = 'status-pill pill-green';
+  });
+
+  es.addEventListener('fdc_gps', e => updateFdc(JSON.parse(e.data)));
+  es.addEventListener('gun_status', e => updateGun(JSON.parse(e.data)));
+  es.addEventListener('gun_ack', e => { const d = JSON.parse(e.data); addLog({t:now(), msg:`Gun ${d.gun} ACK seq=${d.seq} ok=${d.ok}`, level:'info'}); });
+  es.addEventListener('pong', e => { const d = JSON.parse(e.data); addLog({t:now(), msg:`Gun ${d.gun} PONG rssi=${d.rssi}`, level:'info'}); });
+  es.addEventListener('fire_mission', e => updateLastFire(JSON.parse(e.data)));
+  es.addEventListener('log', e => addLog(JSON.parse(e.data)));
+  es.addEventListener('target_update', e => updateTarget(JSON.parse(e.data)));
+  es.addEventListener('target_remove', e => removeTarget(JSON.parse(e.data).id));
+
+  es.onerror = () => {
+    document.getElementById('radio-pill').textContent = 'RADIO: RECONNECTING';
+    document.getElementById('radio-pill').className = 'status-pill pill-red';
+    setTimeout(connectSSE, 3000);
+    es.close();
+  };
+}
+
+// ============================================================
+//  Update functions
+// ============================================================
+function updateFdc(fdc) {
+  gs.fdc = fdc;
+  document.getElementById('fdc-lat').textContent = fdc.lat ? fdc.lat.toFixed(5) : '--';
+  document.getElementById('fdc-lon').textContent = fdc.lon ? fdc.lon.toFixed(5) : '--';
+  document.getElementById('fdc-alt').textContent = fdc.alt ? fdc.alt.toFixed(0) : '--';
+  document.getElementById('fdc-fix').textContent = fdc.fix || '--';
+  document.getElementById('fdc-sats').textContent = fdc.sats || '--';
+
+  const gpsPill = document.getElementById('gps-pill');
+  if (fdc.valid) {
+    gpsPill.textContent = `FDC GPS: FIX${fdc.fix} (${fdc.sats} sats)`;
+    gpsPill.className = 'status-pill pill-green';
+    // Update/create FDC marker
+    if (!fdcMarker) {
+      fdcMarker = L.marker([fdc.lat, fdc.lon], {
+        icon: L.divIcon({ html: '<div style="color:#7fff00;font-size:16px">★</div>', iconSize:[16,16], iconAnchor:[8,8] })
+      }).addTo(map).bindPopup('FDC');
+      map.setView([fdc.lat, fdc.lon], 12);
+    } else {
+      fdcMarker.setLatLng([fdc.lat, fdc.lon]);
+    }
+  } else {
+    gpsPill.textContent = 'FDC GPS: NO FIX';
+    gpsPill.className = 'status-pill pill-yellow';
+  }
+}
+
+function makeCannonSvg(id, hdgDeg, onTarget) {
+  // hdgDeg = heading องศา (0=N, 90=E, 180=S, 270=W)
+  // วาด cannon หมุนตาม heading
+  const color = onTarget ? '#00ff88' : '#39ff14';
+  const rot = hdgDeg || 0;
+  return `<div style="position:relative;width:40px;height:40px;">
+    <svg width="40" height="40" viewBox="-20 -20 40 40" xmlns="http://www.w3.org/2000/svg"
+         style="overflow:visible">
+      <!-- Base circle -->
+      <circle cx="0" cy="0" r="8" fill="#0a1a0a" stroke="${color}" stroke-width="1.5"/>
+      <!-- Cannon barrel (หมุนตาม heading) -->
+      <g transform="rotate(${rot})">
+        <!-- ลำกล้อง (ชี้ขึ้น = N ก่อน rotate) -->
+        <rect x="-3" y="-18" width="6" height="14" rx="2"
+              fill="${color}" opacity="0.9"/>
+        <!-- หัวกล้อง -->
+        <rect x="-4" y="-20" width="8" height="5" rx="1.5"
+              fill="${color}"/>
+        <!-- ล้อซ้าย -->
+        <circle cx="-7" cy="4" r="4" fill="none" stroke="${color}" stroke-width="1.5"/>
+        <!-- ล้อขวา -->
+        <circle cx="7" cy="4" r="4" fill="none" stroke="${color}" stroke-width="1.5"/>
+        <!-- แกน -->
+        <line x1="-11" y1="4" x2="11" y2="4" stroke="${color}" stroke-width="1.5"/>
+      </g>
+      <!-- Gun ID label -->
+      <text x="0" y="14" text-anchor="middle"
+            style="font-family:monospace;font-size:7px;font-weight:bold;fill:${color}">G${id}</text>
+    </svg>
+    ${onTarget ? '<div style="position:absolute;top:-6px;right:-6px;width:10px;height:10px;background:#00ff88;border-radius:50%;border:1px solid #0a1a0a;animation:pulse 1s infinite"></div>' : ''}
+  </div>`;
+}
+
+function updateGun(gun) {
+  const id = String(gun.id || gun.gun || 1);
+  gs.guns[id] = gun;
+
+  // คำนวณ onTarget
+  const hdgMils = gun.hdg;
+  const azMils  = gun.az;
+  let onTarget  = false;
+  let hdgDeg    = null;
+  if (hdgMils != null && hdgMils >= 0) {
+    hdgDeg = hdgMils * (360 / 6400);
+    if (azMils > 0) {
+      let err = azMils - hdgMils;
+      while (err >  3200) err -= 6400;
+      while (err < -3200) err += 6400;
+      onTarget = Math.abs(err) <= 15;
+    }
+  }
+
+  // Update map marker with rotating cannon
+  if (gun.lat && gun.lon && gun.lat !== 0) {
+    const svgHtml = makeCannonSvg(id, hdgDeg, onTarget);
+    const icon = L.divIcon({
+      html: svgHtml,
+      iconSize: [40, 40],
+      iconAnchor: [20, 20],
+      className: ''
+    });
+    if (!gunMarkers[id]) {
+      gunMarkers[id] = L.marker([gun.lat, gun.lon], { icon }).addTo(map);
+    } else {
+      gunMarkers[id].setLatLng([gun.lat, gun.lon]);
+      gunMarkers[id].setIcon(icon);
+    }
+    const hdgStr = hdgDeg != null ? `${hdgDeg.toFixed(0)}°` : '--';
+    gunMarkers[id].bindPopup(
+      `<b>Gun #${id}</b><br>` +
+      `HDG: ${hdgStr}<br>` +
+      `AZ Target: ${gun.az} mil<br>` +
+      `EL: ${gun.el} mil<br>` +
+      `BAT: ${gun.bat}%<br>` +
+      `RSSI: ${gun.rssi} dBm<br>` +
+      `${onTarget ? '<span style="color:#00ff88">✓ ON TARGET</span>' : ''}`
+    );
+  }
+
+  renderGunCards();
+  updateGunPill();
+}
+
+function renderGunCards() {
+  const wrap = document.getElementById('gun-cards');
+  wrap.innerHTML = '';
+  for (let i = 1; i <= 4; i++) {
+    const g = gs.guns[i] || {};
+    const alive = g.alive && g.last_seen && (Date.now()/1000 - g.last_seen) < 30;
+    const sel = gs.selectedGun == i;
+    wrap.innerHTML += `
+      <div class="gun-card ${sel?'selected':''} ${alive?'':'dead'}" onclick="selectGun(${i})">
+        <div class="gun-title">
+          <span class="gun-name">GUN #${i}</span>
+          <span class="gun-alive ${alive?'pill-green':'pill-red'}">${alive?'● ALIVE':'○ OFFLINE'}</span>
+        </div>
+        <div class="gun-grid">
+          <span>BAT</span>   <b>${g.bat||'--'}%</b>
+          <span>RSSI</span>  <b>${g.rssi||'--'} dBm</b>
+          <span>AZ</span>    <b>${g.az||'--'} mil</b>
+          <span>HDG</span>   <b>${g.hdg!=null ? Math.round(g.hdg*360/6400)+'°' : '--'}</b>
+        </div>
+        <div class="gun-actions">
+          <button class="btn-sm" onclick="event.stopPropagation();pingGun(${i})">PING</button>
+          <button class="btn-sm" onclick="event.stopPropagation();goToGun(${i})">MAP</button>
+        </div>
+      </div>`;
+  }
+}
+
+function updateGunPill() {
+  let alive = 0;
+  for (let i = 1; i <= 4; i++) {
+    const g = gs.guns[i] || {};
+    if (g.alive && g.last_seen && (Date.now()/1000 - g.last_seen) < 30) alive++;
+  }
+  const p = document.getElementById('guns-pill');
+  p.textContent = `GUNS: ${alive}/4`;
+  p.className = 'status-pill ' + (alive > 0 ? 'pill-green' : 'pill-red');
+}
+
+function selectGun(id) {
+  gs.selectedGun = id;
+  document.getElementById('fm-gun').value = id;
+  renderGunCards();
+}
+
+function goToGun(id) {
+  const g = gs.guns[id];
+  if (g && g.lat) map.setView([g.lat, g.lon], 13);
+}
+
+function updateTarget(t) {
+  gs.targets[t.id] = t;
+  if (!tgtMarkers[t.id]) {
+    tgtMarkers[t.id] = L.marker([t.lat, t.lon], {
+      icon: L.divIcon({ html: `<div style="color:#ff3c3c;font-size:18px;font-weight:bold">✕</div>`, iconSize:[18,18], iconAnchor:[9,9] })
+    }).addTo(map);
+  } else {
+    tgtMarkers[t.id].setLatLng([t.lat, t.lon]);
+  }
+  tgtMarkers[t.id].bindPopup(`${t.name}<br>${t.lat.toFixed(5)}, ${t.lon.toFixed(5)}`);
+}
+
+function removeTarget(id) {
+  if (tgtMarkers[id]) { map.removeLayer(tgtMarkers[id]); delete tgtMarkers[id]; }
+  delete gs.targets[id];
+}
+
+// ============================================================
+//  Fire Mission
+// ============================================================
+async function calcFire() {
+  const lat  = parseFloat(document.getElementById('fm-lat').value);
+  const lon  = parseFloat(document.getElementById('fm-lon').value);
+  const gun  = document.getElementById('fm-gun').value;
+  const chg  = document.getElementById('fm-charge').value;
+  const name = document.getElementById('fm-name').value || 'TGT';
+
+  if (!lat || !lon) { addLog({t:now(),msg:'Enter target coordinates first',level:'error'}); return; }
+
+  // Save target
+  await fetch('/api/target', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({lat, lon, name})
+  });
+
+  const body = { tgt_lat:lat, tgt_lon:lon, gun, charge: chg ? parseInt(chg) : null };
+  const r = await fetch('/api/fire_mission', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({...body, send:false})
+  });
+  // calc only
+  const data = await r.json();
+  if (data.error) { addLog({t:now(),msg:'Calc error: '+data.error,level:'error'}); return; }
+
+  gs.pendingSolution = data;
+  showSolution(data);
+}
+
+function showSolution(s) {
+  document.getElementById('solution').style.display = 'block';
+  document.getElementById('sol-az').textContent    = (s.az_mils_corrected || s.az_mils) + ' mil';
+  document.getElementById('sol-el').textContent    = s.el_mils + ' mil';
+  document.getElementById('sol-range').textContent = s.range_m + ' m';
+  document.getElementById('sol-chg').textContent   = s.charge;
+  document.getElementById('sol-drift').textContent = s.drift_mils + ' mil';
+  document.getElementById('btn-fire').disabled = false;
+}
+
+async function sendFire() {
+  const lat  = parseFloat(document.getElementById('fm-lat').value);
+  const lon  = parseFloat(document.getElementById('fm-lon').value);
+  const gun  = document.getElementById('fm-gun').value;
+  const chg  = document.getElementById('fm-charge').value;
+
+  if (!lat || !lon) return;
+
+  const r = await fetch('/api/fire_mission', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ tgt_lat:lat, tgt_lon:lon, gun, charge: chg ? parseInt(chg) : null })
+  });
+  const data = await r.json();
+  if (data.error) { addLog({t:now(),msg:'Fire error: '+data.error,level:'error'}); return; }
+
+  addLog({t:now(), msg:`FIRE → Gun ${gun} AZ=${data.az_mils_corrected||data.az_mils} EL=${data.el_mils} CHG=${data.charge} Range=${data.range_m}m`, level:'fire'});
+  document.getElementById('btn-fire').disabled = true;
+  updateLastFire(data);
+}
+
+function updateLastFire(s) {
+  document.getElementById('last-fire').innerHTML =
+    `Gun ${s.gun_id} | AZ <b style="color:#ffd700">${s.az_mils_corrected||s.az_mils}</b> mil | ` +
+    `EL <b style="color:#ffd700">${s.el_mils}</b> mil | CHG ${s.charge} | ${s.range_m}m`;
+}
+
+// ============================================================
+//  Gun actions
+// ============================================================
+async function pingGun(id) {
+  await fetch(`/api/ping/${id}`, {method:'POST'});
+  addLog({t:now(), msg:`PING → Gun ${id}`, level:'info'});
+}
+
+// ============================================================
+//  Log
+// ============================================================
+function addLog(entry) {
+  const box = document.getElementById('log-entries');
+  const div = document.createElement('div');
+  div.className = `log-${entry.level||'info'}`;
+  div.textContent = `[${entry.t}] ${entry.msg}`;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+  // Keep max 100 entries
+  while (box.children.length > 100) box.removeChild(box.firstChild);
+}
+
+// ============================================================
+//  Clock
+// ============================================================
+function now() { return new Date().toTimeString().slice(0,8); }
+setInterval(() => { document.getElementById('clock').textContent = now() + ' LOCAL'; }, 1000);
+
+// ============================================================
+//  Init
+// ============================================================
+renderGunCards();
+connectSSE();
+</script>
+</body>
+</html>
