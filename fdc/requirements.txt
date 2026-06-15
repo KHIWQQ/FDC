@@ -1,0 +1,8 @@
+# FDC Web App — runtime dependencies
+flask>=3.0
+pyserial>=3.5
+# Linux-only: instant hotplug detection via udev (optional — falls back to polling)
+pyudev>=0.24 ; platform_system == "Linux"
+# Uplink ขึ้นศูนย์บัญชาการ (STEP C1/C2) — optional: ไม่มีก็รันเดี่ยวได้ (edge-autonomous)
+paho-mqtt>=1.6
+pyyaml>=6.0

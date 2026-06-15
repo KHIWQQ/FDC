@@ -1,0 +1,19 @@
+# ============================================================
+#  ACL — สิทธิ์ตาม CN ของใบรับรอง (use_identity_as_username true)
+# ============================================================
+#  หลักการ:
+#   - ศอย. (CN = <unit>/<node> เช่น "BN1-A/FDC01"): เขียน telemetry ของตัวเอง,
+#     อ่านเฉพาะคำสั่งที่ส่งถึงตัวเอง
+#   - ingest ของศูนย์ (CN = "central-ingest"): อ่าน telemetry ทุกหน่วย, ส่งคำสั่งได้
+#  หมายเหตุ: pattern %u = username (= CN). ออกใบรับรอง ศอย. ให้ CN = "<unit>/<node>"
+# ============================================================
+
+# --- ศูนย์: ingest อ่านทุก telemetry + ส่งคำสั่งลงทุกหน่วย ---
+user central-ingest
+topic read  fdc/#
+topic write cmd/fdc/#
+
+# --- ศอย. แต่ละหน่วย: เขียน telemetry ของตัวเอง, อ่านคำสั่งถึงตัวเอง ---
+# %u = "<unit>/<node>" จึงตรง path ใต้ fdc/ และ cmd/fdc/ พอดี
+pattern write fdc/%u/#
+pattern read  cmd/fdc/%u/#

@@ -1,0 +1,10 @@
+# ความลับ — ห้าม commit เด็ดขาด
+.env
+certs/
+*.key
+*.crt
+*.csr
+*.srl
+.cmd_seq_*
+uplink_queue.db
+__pycache__/

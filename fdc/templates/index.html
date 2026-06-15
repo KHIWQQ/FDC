@@ -50,6 +50,16 @@
     50%      { opacity:0.4; transform:scale(1.4); }
   }
 
+  /* เตือนแบตต่ำ: กระพริบสีแดงแปปเดียว (4 ครั้ง ~1.6s) แล้วค้างสีแดง */
+  @keyframes batLowBlink {
+    0%,100% { opacity:1; }
+    50%      { opacity:0.15; }
+  }
+  .bat-low {
+    color: #ff3c3c !important;
+    animation: batLowBlink 0.4s ease-in-out 4;
+  }
+
   /* ── Main Layout ── */
   #main {
     display: flex;
@@ -287,9 +297,13 @@
 <div id="topbar">
   <h1>⊕ Artillery FCS — Phase 2</h1>
   <span class="status-pill pill-yellow" id="radio-pill">RADIO: INIT</span>
+  <button class="status-pill pill-green" id="rescan-btn" onclick="rescanRadio()"
+          style="cursor:pointer;background:transparent;font-family:inherit"
+          title="Re-run plug-and-play auto-detect">⟳ RESCAN</button>
   <span class="status-pill pill-yellow" id="gps-pill">FDC GPS: NO FIX</span>
   <span class="status-pill pill-green" id="guns-pill">GUNS: 0/4</span>
-  <span style="margin-left:auto;font-size:11px;color:#555" id="clock"></span>
+  <span style="margin-left:auto;font-size:11px;color:#555" id="uptime">UP --:--:--</span>
+  <span style="font-size:11px;color:#555" id="clock"></span>
 </div>
 
 <div id="main">
@@ -393,7 +407,8 @@ const gs = {
   targets: {},
   mode:   'view',
   selectedGun: 1,
-  pendingSolution: null
+  pendingSolution: null,
+  bootTime: null
 };
 
 // Map markers
@@ -465,14 +480,15 @@ function connectSSE() {
 
   es.addEventListener('init', e => {
     const data = JSON.parse(e.data);
+    if (data.boot_time) gs.bootTime = data.boot_time;
     updateFdc(data.fdc);
     Object.values(data.guns).forEach(g => updateGun(g));
     Object.values(data.targets).forEach(t => updateTarget(t));
     data.log.forEach(addLog);
-    document.getElementById('radio-pill').textContent = 'RADIO: CONNECTED';
-    document.getElementById('radio-pill').className = 'status-pill pill-green';
+    updateRadio(data.radio);
   });
 
+  es.addEventListener('radio_status', e => updateRadio(JSON.parse(e.data)));
   es.addEventListener('fdc_gps', e => updateFdc(JSON.parse(e.data)));
   es.addEventListener('gun_status', e => updateGun(JSON.parse(e.data)));
   es.addEventListener('gun_ack', e => { const d = JSON.parse(e.data); addLog({t:now(), msg:`Gun ${d.gun} ACK seq=${d.seq} ok=${d.ok}`, level:'info'}); });
@@ -483,7 +499,7 @@ function connectSSE() {
   es.addEventListener('target_remove', e => removeTarget(JSON.parse(e.data).id));
 
   es.onerror = () => {
-    document.getElementById('radio-pill').textContent = 'RADIO: RECONNECTING';
+    document.getElementById('radio-pill').textContent = 'SERVER: OFFLINE';
     document.getElementById('radio-pill').className = 'status-pill pill-red';
     setTimeout(connectSSE, 3000);
     es.close();
@@ -493,6 +509,29 @@ function connectSSE() {
 // ============================================================
 //  Update functions
 // ============================================================
+function updateRadio(r) {
+  const pill = document.getElementById('radio-pill');
+  if (r && r.connected) {
+    const node = (r.node != null) ? r.node : '?';
+    const freq = (r.freq != null) ? ` / ${Number(r.freq).toFixed(1)}MHz` : '';
+    pill.textContent = `RADIO: CONNECTED (${r.port || '?'} / node ${node}${freq})`;
+    pill.className = 'status-pill pill-green';
+  } else if (r && r.status === 'searching') {
+    pill.textContent = 'RADIO: SEARCHING…';
+    pill.className = 'status-pill pill-yellow';
+  } else {
+    pill.textContent = 'RADIO: DISCONNECTED';
+    pill.className = 'status-pill pill-red';
+  }
+}
+
+async function rescanRadio() {
+  const pill = document.getElementById('radio-pill');
+  pill.textContent = 'RADIO: SEARCHING…';
+  pill.className = 'status-pill pill-yellow';
+  try { await fetch('/api/rescan', {method:'POST'}); }
+  catch (e) { addLog({t:now(), msg:'Rescan request failed', level:'error'}); }
+}
 function updateFdc(fdc) {
   gs.fdc = fdc;
   document.getElementById('fdc-lat').textContent = fdc.lat ? fdc.lat.toFixed(5) : '--';
@@ -617,7 +656,7 @@ function renderGunCards() {
           <span class="gun-alive ${alive?'pill-green':'pill-red'}">${alive?'● ALIVE':'○ OFFLINE'}</span>
         </div>
         <div class="gun-grid">
-          <span>BAT</span>   <b>${g.bat||'--'}%</b>
+          <span>BAT</span>   <b class="${(alive && g.bat>0 && g.bat<20)?'bat-low':''}">${g.bat||'--'}%</b>
           <span>RSSI</span>  <b>${g.rssi||'--'} dBm</b>
           <span>AZ</span>    <b>${g.az||'--'} mil</b>
           <span>HDG</span>   <b>${g.hdg!=null ? Math.round(g.hdg*360/6400)+'°' : '--'}</b>
@@ -765,7 +804,21 @@ function addLog(entry) {
 //  Clock
 // ============================================================
 function now() { return new Date().toTimeString().slice(0,8); }
-setInterval(() => { document.getElementById('clock').textContent = now() + ' LOCAL'; }, 1000);
+function fmtUptime(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const d = Math.floor(sec/86400);
+  const h = String(Math.floor(sec%86400/3600)).padStart(2,'0');
+  const m = String(Math.floor(sec%3600/60)).padStart(2,'0');
+  const s = String(sec%60).padStart(2,'0');
+  return (d>0 ? d+'d ' : '') + `${h}:${m}:${s}`;
+}
+setInterval(() => {
+  document.getElementById('clock').textContent = now() + ' LOCAL';
+  if (gs.bootTime) {
+    document.getElementById('uptime').textContent =
+      'UP ' + fmtUptime(Date.now()/1000 - gs.bootTime);
+  }
+}, 1000);
 
 // ============================================================
 //  Init

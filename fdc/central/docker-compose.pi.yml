@@ -1,0 +1,72 @@
+# ============================================================
+#  เวอร์ชันสำหรับ Raspberry Pi / arm64
+#    db ใช้ postgis/postgis (มี arm64) — ไม่มี TimescaleDB
+#    ฟังก์ชัน D1–D4 ครบ (รายงานเป็น SQL ธรรมดา ไม่พึ่ง TimescaleDB)
+#
+#  ใช้:  docker compose -f docker-compose.pi.yml up -d --build
+#  (เตรียม .env + ./make-certs.sh ก่อนเหมือนเดิม)
+# ============================================================
+
+services:
+  db:
+    image: postgis/postgis:16-3.4            # multi-arch — มี arm64 สำหรับ Pi
+    environment:
+      POSTGRES_USER:     ${DB_USER:-fdc}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-fdc}
+      POSTGRES_DB:       ${DB_NAME:-fdc}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./db/schema-lite.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-fdc} -d ${DB_NAME:-fdc}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  mosquitto:
+    image: eclipse-mosquitto:2               # multi-arch — arm64 ได้
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/aclfile:/mosquitto/config/aclfile:ro
+      - ./certs:/mosquitto/certs:ro
+      - mosq_data:/mosquitto/data
+    ports:
+      - "${MQTT_PORT:-8883}:8883"
+    restart: unless-stopped
+
+  ingest:
+    build: ./ingest
+    depends_on:
+      db:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    environment:
+      DB_DSN:            postgresql://${DB_USER:-fdc}:${DB_PASSWORD:-fdc}@db:5432/${DB_NAME:-fdc}
+      MQTT_HOST:         mosquitto
+      MQTT_PORT:         "8883"
+      MQTT_TLS:          "true"
+      MQTT_CA_CERT:      /certs/ca.crt
+      MQTT_CLIENT_CERT:  /certs/ingest.crt
+      MQTT_CLIENT_KEY:   /certs/ingest.key
+      FDC_CMD_HMAC_KEYS: ${FDC_CMD_HMAC_KEYS:-}
+      FDC_CMD_HMAC_KEY:  ${FDC_CMD_HMAC_KEY:-}
+      WEB_DIR:           /app/web
+      AUTH_ENABLED:      ${AUTH_ENABLED:-true}
+      JWT_SECRET:        ${JWT_SECRET:-}
+      JWT_TTL_MIN:       ${JWT_TTL_MIN:-720}
+      ADMIN_USER:        ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD:    ${ADMIN_PASSWORD:-}
+    volumes:
+      - ./certs:/certs:ro
+      - ./web:/app/web:ro
+    ports:
+      - "${API_PORT:-8000}:8000"
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  mosq_data:

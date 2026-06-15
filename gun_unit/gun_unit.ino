@@ -17,6 +17,7 @@
 #include <SPI.h>
 #include <XPowersLib.h>
 #include <Preferences.h>
+#include <mbedtls/ccm.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -43,8 +44,13 @@
 #define RM_MOSI           2
 #define RM_CS             6
 
-// ── LoRa Config ──────────────────────────────────────────────────
-#define LORA_FREQ     868.0
+// ── LoRa Config — ย่าน AS923 ไทย (กสทช. 920–925 MHz) ────────────
+// STEP B1: ตารางช่อง — ต้องตั้ง LORA_CHANNEL ตรงกับ fdc_dongle ของกองร้อยเดียวกัน
+static const float LORA_CHANNELS[] = {
+  920.6, 921.2, 921.8, 922.4, 923.0, 923.6, 924.2, 924.8   // CH0–CH7, ห่าง 600kHz
+};
+#define LORA_CHANNEL    4          // CH4 = 923.0 MHz (กลางย่าน)
+#define LORA_FREQ     (LORA_CHANNELS[LORA_CHANNEL])
 #define LORA_BW        62.5
 #define LORA_SF        12
 #define LORA_CR         5
@@ -117,6 +123,116 @@ uint16_t crc16(const uint8_t *d, size_t l) {
   return c;
 }
 
+// ════════════════════════════════════════════════════════════════
+// STEP B2 — LoRa link crypto: AES-128-CCM + anti-replay
+// (โค้ดชุดเดียวกับ fdc_dongle — envelope/nonce/AAD ต้องตรงกันเป๊ะ)
+// Envelope: [0]=0xE1 | [1..4]=counter BE | [5]=sender | cipher | tag 8B
+// ════════════════════════════════════════════════════════════════
+#define CRYPT_MAGIC    0xE1
+#define CRYPT_HDR_LEN  6
+#define CRYPT_TAG_LEN  8
+#define SENDER_FDC     0xF1   // sender id ของแม่ข่าย
+
+// คีย์เริ่มต้น "FDC-DEFAULT-KEY!" — ทดสอบเท่านั้น ตั้งจริงผ่าน serial:
+// {"type":"SET_KEY","key":"<hex 32 ตัว>"} → เก็บ NVS
+static uint8_t  loraKey[16] = {
+  0x46,0x44,0x43,0x2D,0x44,0x45,0x46,0x41,
+  0x55,0x4C,0x54,0x2D,0x4B,0x45,0x59,0x21
+};
+static uint32_t txCtr = 0;
+static uint32_t lastRxCtr[256] = {0};
+
+void cryptInit() {
+  prefs.begin("fcs", false);
+  prefs.getBytes("lorakey", loraKey, 16);
+  txCtr = prefs.getUInt("loractr", 0) + 64;   // boot ใหม่ข้าม +64 กัน nonce ซ้ำ
+  prefs.putUInt("loractr", txCtr);
+  prefs.end();
+}
+
+static void makeNonce(uint8_t sender, uint32_t ctr, uint8_t nonce[13]) {
+  memset(nonce, 0, 13);
+  nonce[0] = sender;
+  nonce[1] = (ctr >> 24) & 0xFF; nonce[2] = (ctr >> 16) & 0xFF;
+  nonce[3] = (ctr >>  8) & 0xFF; nonce[4] =  ctr        & 0xFF;
+}
+
+size_t cryptSeal(uint8_t sender, const uint8_t *plain, size_t len, uint8_t *out) {
+  uint32_t ctr = ++txCtr;
+  if ((txCtr & 63) == 0) {
+    prefs.begin("fcs", false); prefs.putUInt("loractr", txCtr); prefs.end();
+  }
+  out[0] = CRYPT_MAGIC;
+  out[1] = (ctr >> 24) & 0xFF; out[2] = (ctr >> 16) & 0xFF;
+  out[3] = (ctr >>  8) & 0xFF; out[4] =  ctr        & 0xFF;
+  out[5] = sender;
+  uint8_t nonce[13]; makeNonce(sender, ctr, nonce);
+  mbedtls_ccm_context c; mbedtls_ccm_init(&c);
+  mbedtls_ccm_setkey(&c, MBEDTLS_CIPHER_ID_AES, loraKey, 128);
+  int rc = mbedtls_ccm_encrypt_and_tag(&c, len, nonce, 13,
+             out, CRYPT_HDR_LEN,
+             plain, out + CRYPT_HDR_LEN,
+             out + CRYPT_HDR_LEN + len, CRYPT_TAG_LEN);
+  mbedtls_ccm_free(&c);
+  return rc == 0 ? CRYPT_HDR_LEN + len + CRYPT_TAG_LEN : 0;
+}
+
+size_t cryptOpen(const uint8_t *buf, size_t len, uint8_t *out, uint8_t *senderOut) {
+  if (len < CRYPT_HDR_LEN + CRYPT_TAG_LEN + 1 || buf[0] != CRYPT_MAGIC) return 0;
+  uint32_t ctr = ((uint32_t)buf[1] << 24) | ((uint32_t)buf[2] << 16) |
+                 ((uint32_t)buf[3] <<  8) |  (uint32_t)buf[4];
+  uint8_t sender = buf[5];
+  if (ctr <= lastRxCtr[sender]) return 0;              // replay → ทิ้ง
+  size_t plen = len - CRYPT_HDR_LEN - CRYPT_TAG_LEN;
+  uint8_t nonce[13]; makeNonce(sender, ctr, nonce);
+  mbedtls_ccm_context c; mbedtls_ccm_init(&c);
+  mbedtls_ccm_setkey(&c, MBEDTLS_CIPHER_ID_AES, loraKey, 128);
+  int rc = mbedtls_ccm_auth_decrypt(&c, plen, nonce, 13,
+             buf, CRYPT_HDR_LEN,
+             buf + CRYPT_HDR_LEN, out,
+             buf + CRYPT_HDR_LEN + plen, CRYPT_TAG_LEN);
+  mbedtls_ccm_free(&c);
+  if (rc != 0) return 0;                               // MAC ไม่ผ่าน = ของปลอม
+  lastRxCtr[sender] = ctr;
+  if (senderOut) *senderOut = sender;
+  return plen;
+}
+
+void setLoraKey(const char *hex) {
+  if (!hex || strlen(hex) != 32) { Serial.println("[KEY] ERR need 32 hex chars"); return; }
+  for (int i = 0; i < 16; i++) {
+    char b[3] = { hex[i*2], hex[i*2+1], 0 };
+    loraKey[i] = (uint8_t)strtol(b, nullptr, 16);
+  }
+  prefs.begin("fcs", false);
+  prefs.putBytes("lorakey", loraKey, 16);
+  prefs.end();
+  Serial.println("[KEY] OK saved to NVS");
+}
+
+// ── Serial config (USB) — ตั้ง key ตอน provisioning ────────────
+String cfgBuf = "";
+void handleSerialCfg() {
+  while (Serial.available()) {
+    char ch = Serial.read();
+    if (ch == '\n') {
+      cfgBuf.trim();
+      if (cfgBuf.length() > 0 && cfgBuf[0] == '{') {
+        StaticJsonDocument<128> doc;
+        if (deserializeJson(doc, cfgBuf) == DeserializationError::Ok) {
+          const char *t = doc["type"];
+          if (t && strcmp(t, "SET_KEY") == 0)
+            setLoraKey(doc["key"] | (const char*)nullptr);
+        }
+      }
+      cfgBuf = "";
+    } else {
+      cfgBuf += ch;
+      if (cfgBuf.length() > 256) cfgBuf = "";
+    }
+  }
+}
+
 // ── RM3100 SPI Helpers ───────────────────────────────────────────
 uint8_t rm_read_reg(uint8_t reg) {
   digitalWrite(RM_CS, LOW);
@@ -179,8 +295,11 @@ bool rm3100_read(RM3100Data &out) {
 }
 
 // ── LoRa transmit (blocking but only on Core 0) ──────────────────
+// STEP B2: เข้ารหัสทุกแพ็กเก็ตก่อนออกอากาศ (sender = gunId)
 void loraSend(uint8_t *data, size_t len) {
-  radio.transmit(data, len);
+  uint8_t env[80];
+  size_t n = cryptSeal(gunId, data, len, env);
+  if (n) radio.transmit(env, n);
   radio.startReceive();
 }
 
@@ -208,14 +327,20 @@ void taskRadioGPS(void *pv) {
       xSemaphoreGive(xMutex);
     }
 
+    // Serial config (provisioning key ผ่าน USB)
+    handleSerialCfg();
+
     // LoRa RX
     if (loraRxFlag) {
       loraRxFlag = false;
-      uint8_t buf[64];
-      int st = radio.readData(buf, sizeof(buf));
+      uint8_t env[80], buf[64];
+      int st = radio.readData(env, sizeof(env));
       if (st == RADIOLIB_ERR_NONE) {
-        size_t len = radio.getPacketLength();
-        if (len >= 4) {
+        size_t envLen = radio.getPacketLength();
+        // STEP B2: ถอดรหัส + MAC + กัน replay — รับเฉพาะแม่ข่าย (SENDER_FDC)
+        uint8_t sender = 0;
+        size_t len = cryptOpen(env, envLen, buf, &sender);
+        if (len >= 4 && sender == SENDER_FDC) {
           uint16_t rxCrc = ((uint16_t)buf[len-2]<<8)|buf[len-1];
           if (rxCrc == crc16(buf, len-2)) {
             if (buf[0]==0x10 && buf[2]==gunId && len>=11) {
@@ -482,6 +607,7 @@ void setup() {
   gunId = prefs.getUChar("gunId", 1);
   state.northOffset = prefs.getFloat("northOff", 0.0f);
   prefs.end();
+  cryptInit();   // โหลด key + counter จาก NVS ก่อนใช้วิทยุ
 
   // Hold BOOT at boot = change Gun ID
   if (digitalRead(BUTTON_PIN)==LOW) {
@@ -528,7 +654,7 @@ void setup() {
   radio.setSyncWord(LORA_SYNC); radio.setOutputPower(LORA_POWER);
   radio.setCurrentLimit(140); radio.setPreambleLength(LORA_PREAMBLE);
   radio.setCRC(2); radio.setDio1Action(setRxFlag); radio.startReceive();
-  Serial.println("[LoRa] OK");
+  Serial.printf("[LoRa] OK %.1fMHz CH%d AES-CCM\n", LORA_FREQ, LORA_CHANNEL);
 
   // RM3100
   compassOk = rm3100_init();

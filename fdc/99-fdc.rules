@@ -1,0 +1,18 @@
+# 99-fdc.rules — ให้สิทธิ์เข้าถึง FDC dongle บน Linux โดยไม่ต้อง sudo
+#
+# ติดตั้ง:
+#   sudo cp 99-fdc.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# ครอบคลุม USB-serial ที่ T-Beam / ESP32-S3 ใช้บ่อย:
+#   303a = ESP32-S3 native USB CDC (ช่องหลักที่แนะนำ ไม่ต้องลงไดรเวอร์บน Windows)
+#   10c4 = Silicon Labs CP210x
+#   1a86 = WCH CH340 / CH9102
+#   0403 = FTDI
+#
+# ตั้ง MODE 0666 (ทุก user อ่าน/เขียนได้) + ใส่กลุ่ม dialout + ทำ symlink /dev/fdc-dongle
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", MODE="0666", GROUP="dialout", SYMLINK+="fdc-dongle"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", MODE="0666", GROUP="dialout", SYMLINK+="fdc-dongle"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", MODE="0666", GROUP="dialout", SYMLINK+="fdc-dongle"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", MODE="0666", GROUP="dialout", SYMLINK+="fdc-dongle"

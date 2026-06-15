@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>FDC NATIONAL COP</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Courier New', monospace;
+    background: #0a0f0a; color: #39ff14;
+    height: 100vh; overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  /* ── Top Bar ── */
+  #topbar {
+    background: #0d1a0d; border-bottom: 1px solid #1a3a1a;
+    padding: 6px 16px; display: flex; align-items: center; gap: 18px; flex-shrink: 0;
+  }
+  #topbar h1 { font-size: 14px; color: #7fff00; letter-spacing: 3px; text-transform: uppercase; }
+  #topbar .spacer { flex: 1; }
+  .status-pill { font-size: 11px; padding: 2px 8px; border-radius: 2px; border: 1px solid currentColor; }
+  .pill-green  { color: #39ff14; border-color: #39ff14; }
+  .pill-red    { color: #ff3c3c; border-color: #ff3c3c; }
+  .pill-yellow { color: #ffd700; border-color: #ffd700; }
+  .pill-dim    { color: #557755; border-color: #335533; }
+
+  /* ── Layout ── */
+  #main { display: flex; flex: 1; overflow: hidden; }
+  #left, #right {
+    width: 290px; background: #0d1a0d; display: flex; flex-direction: column;
+    overflow-y: auto; flex-shrink: 0;
+  }
+  #left  { border-right: 1px solid #1a3a1a; }
+  #right { border-left: 1px solid #1a3a1a; }
+  #center { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  .panel-header {
+    padding: 8px 12px; font-size: 11px; letter-spacing: 2px; color: #7fff00;
+    border-bottom: 1px solid #1a3a1a; background: #111f11; text-transform: uppercase;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .panel-header small { color: #5a5; letter-spacing: 0; }
+
+  /* ── Unit list ── */
+  .unit-card {
+    padding: 9px 12px; border-bottom: 1px solid #1a3a1a; font-size: 11px; cursor: pointer;
+    transition: background 0.15s;
+  }
+  .unit-card:hover    { background: #142014; }
+  .unit-card.selected { background: #1a2e1a; border-left: 3px solid #39ff14; }
+  .unit-card.offline  { opacity: 0.5; }
+  .unit-top { display: flex; justify-content: space-between; margin-bottom: 3px; }
+  .unit-name { font-size: 12px; font-weight: bold; color: #7fff00; }
+  .unit-sub  { color: #888; font-size: 10px; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 4px; }
+  .dot-on  { background: #39ff14; box-shadow: 0 0 5px #39ff14; }
+  .dot-off { background: #ff3c3c; }
+
+  /* ── Map ── */
+  #map { flex: 1; }
+  .leaflet-container { background: #111a11; }
+  .dark-tiles { filter: invert(100%) hue-rotate(180deg) brightness(0.7) contrast(1.2); }
+  .pin {
+    font-size: 16px; text-align: center; line-height: 1;
+    text-shadow: 0 0 3px #000, 0 0 3px #000;
+  }
+  .pin-node { color: #39ff14; }
+  .pin-gun  { color: #7fdfff; }
+  .pin-tgt  { color: #ff3c3c; }
+
+  /* ── Feed / timeline ── */
+  #feed { height: 190px; border-top: 1px solid #1a3a1a; background: #0b150b; display: flex; flex-direction: column; }
+  #feed-entries { flex: 1; overflow-y: auto; padding: 4px 0; font-size: 11px; }
+  .ev { padding: 2px 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ev .t { color: #5a5; }
+  .ev .u { color: #7fff00; }
+  .ev.error .m { color: #ff6b6b; }
+  .ev.fire  .m { color: #ffd700; }
+  .ev .m { color: #bdb; }
+
+  /* ── Detail panel ── */
+  #detail { padding: 0; }
+  .kv { padding: 8px 12px; border-bottom: 1px solid #1a3a1a; font-size: 11px; }
+  .kv span { color: #888; } .kv b { color: #39ff14; }
+  .gun-row { padding: 8px 12px; border-bottom: 1px solid #1a3a1a; font-size: 11px; }
+  .gun-row .gh { display: flex; justify-content: space-between; margin-bottom: 3px; }
+  .gun-row .gn { color: #7fff00; font-weight: bold; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; }
+  .grid2 span { color: #888; } .grid2 b { color: #cfc; }
+  .bat-low { color: #ff3c3c !important; }
+  .empty { padding: 14px 12px; color: #557755; font-size: 11px; }
+
+  /* ── Buttons / replay ── */
+  button.act {
+    background: #111f11; color: #39ff14; border: 1px solid #2a5a2a;
+    font-family: inherit; font-size: 10px; padding: 3px 8px; cursor: pointer; border-radius: 2px;
+  }
+  button.act:hover { background: #1a2e1a; }
+  button.act:disabled { opacity: 0.4; cursor: not-allowed; }
+  #replay-bar { padding: 6px 12px; border-bottom: 1px solid #1a3a1a; display: flex; gap: 6px; align-items: center; font-size: 10px; }
+  #replay-slider { flex: 1; }
+
+  /* ── Login overlay (STEP D3) ── */
+  #login {
+    position: fixed; inset: 0; background: #060a06; z-index: 9999;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #login .box {
+    background: #0d1a0d; border: 1px solid #2a5a2a; padding: 28px 32px; width: 320px;
+    box-shadow: 0 0 30px #0f3a0f;
+  }
+  #login h2 { color: #7fff00; font-size: 15px; letter-spacing: 3px; margin-bottom: 4px; }
+  #login .sub { color: #5a5; font-size: 10px; margin-bottom: 18px; }
+  #login input {
+    width: 100%; background: #081208; border: 1px solid #2a5a2a; color: #39ff14;
+    font-family: inherit; font-size: 13px; padding: 8px 10px; margin-bottom: 10px;
+  }
+  #login button {
+    width: 100%; background: #143a14; color: #7fff00; border: 1px solid #39ff14;
+    font-family: inherit; font-size: 13px; letter-spacing: 2px; padding: 9px; cursor: pointer;
+  }
+  #login button:hover { background: #1c4e1c; }
+  #login .err { color: #ff6b6b; font-size: 11px; min-height: 16px; margin-top: 8px; }
+  #user-box { font-size: 11px; color: #cfc; }
+  #user-box b { color: #7fff00; }
+  .role-tag { font-size: 9px; padding: 1px 5px; border: 1px solid #2a5a2a; border-radius: 2px; color: #9d9; margin-left: 4px; }
+</style>
+</head>
+<body>
+
+<!-- Login overlay (STEP D3) -->
+<div id="login" style="display:none">
+  <div class="box">
+    <h2>◈ FDC NATIONAL COP</h2>
+    <div class="sub">ศูนย์บัญชาการระดับประเทศ — เข้าสู่ระบบ</div>
+    <form onsubmit="doLogin(event)">
+      <input id="li-user" placeholder="ชื่อผู้ใช้" autocomplete="username" autofocus/>
+      <input id="li-pass" type="password" placeholder="รหัสผ่าน" autocomplete="current-password"/>
+      <button type="submit">เข้าสู่ระบบ</button>
+      <div class="err" id="li-err"></div>
+    </form>
+  </div>
+</div>
+
+<div id="topbar">
+  <h1>◈ FDC NATIONAL COP</h1>
+  <span class="status-pill pill-yellow" id="ws-pill">LINK: INIT</span>
+  <span class="status-pill pill-green"  id="units-pill">UNITS: 0/0</span>
+  <span class="status-pill pill-green"  id="guns-pill">GUNS: 0</span>
+  <div class="spacer"></div>
+  <span id="user-box"></span>
+  <button class="act" id="logout-btn" onclick="logout()" style="display:none">ออกจากระบบ</button>
+  <span class="status-pill pill-dim" id="clock"></span>
+</div>
+
+<div id="main">
+  <!-- ซ้าย: รายการหน่วย (ศอย.) ทั้งประเทศ -->
+  <div id="left">
+    <div class="panel-header">◈ หน่วย ศอย. <small id="left-count">0</small></div>
+    <div id="unit-list"></div>
+  </div>
+
+  <!-- กลาง: แผนที่ + ไทม์ไลน์/feed -->
+  <div id="center">
+    <div id="map"></div>
+    <div id="feed">
+      <div class="panel-header">
+        ◈ LIVE FEED
+        <span>
+          <button class="act" id="replay-btn" onclick="toggleReplay()">⏵ REPLAY</button>
+        </span>
+      </div>
+      <div id="replay-bar" style="display:none">
+        <button class="act" id="rp-play" onclick="rpPlayPause()">⏵</button>
+        <input type="range" id="replay-slider" min="0" max="0" value="0" oninput="rpSeek(this.value)"/>
+        <span id="rp-time">--</span>
+      </div>
+      <div id="feed-entries"></div>
+    </div>
+  </div>
+
+  <!-- ขวา: รายละเอียดหน่วยที่เลือก -->
+  <div id="right">
+    <div class="panel-header">◈ รายละเอียดหน่วย <small id="sel-name">— เลือกหน่วย</small></div>
+    <div id="detail"><div class="empty">คลิกหน่วยทางซ้าย หรือหมุดบนแผนที่ เพื่อดูรายละเอียด</div></div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+//  FDC National COP dashboard (STEP D2) — กิน API ของ ingest (D1)
+// ============================================================
+const KEY = (u, n) => `${u}/${n}`;
+
+// ── Auth (STEP D3) ──
+let TOKEN = localStorage.getItem('fdc_token') || '';
+let ME = null;          // {username, role, scope_level, ...}
+function authHeaders() { return TOKEN ? { 'Authorization': 'Bearer ' + TOKEN } : {}; }
+async function authFetch(url, opts = {}) {
+  const r = await fetch(url, { ...opts, headers: { ...(opts.headers||{}), ...authHeaders() } });
+  if (r.status === 401) { showLogin(); throw new Error('unauthorized'); }
+  return r;
+}
+function showLogin(msg) {
+  document.getElementById('login').style.display = 'flex';
+  if (msg) document.getElementById('li-err').textContent = msg;
+}
+async function doLogin(e) {
+  e.preventDefault();
+  const username = document.getElementById('li-user').value.trim();
+  const password = document.getElementById('li-pass').value;
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }) });
+    if (!r.ok) { const d = await r.json().catch(()=>({})); showLogin(d.detail || 'เข้าสู่ระบบไม่สำเร็จ'); return; }
+    const d = await r.json();
+    TOKEN = d.token || ''; ME = d.user;
+    localStorage.setItem('fdc_token', TOKEN);
+    document.getElementById('login').style.display = 'none';
+    document.getElementById('li-err').textContent = '';
+    start();
+  } catch (err) { showLogin('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้'); }
+}
+function logout() {
+  TOKEN = ''; ME = null; localStorage.removeItem('fdc_token');
+  location.reload();
+}
+function renderUser() {
+  if (!ME) return;
+  const scope = ME.scope_level === 'national' ? 'ทั้งประเทศ'
+    : ME.scope_level === 'unit' ? `หน่วย ${ME.scope_unit}` : `${ME.scope_unit}/${ME.scope_node}`;
+  document.getElementById('user-box').innerHTML =
+    `<b>${ME.name||ME.username}</b><span class="role-tag">${ME.role}</span><span class="role-tag">${scope}</span>`;
+  document.getElementById('logout-btn').style.display = '';
+}
+
+const nodes = {};       // "unit/node" → {unit,node,name,online,last_seen,lat,lon,bat,fix,sats,...}
+const guns  = {};       // "unit/node" → { gun_id → {lat,lon,az,el,hdg,bat,rssi,snr,time} }
+let   selected = null;  // "unit/node"
+
+// ── Map ──
+const map = L.map('map', { zoomControl: true, attributionControl: false }).setView([13.0, 101.0], 6);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19, className: 'dark-tiles'
+}).addTo(map);
+const markers = {};     // id → L.marker  (node:<key>, gun:<key>:<id>, tgt:<key>)
+
+function pinIcon(cls, sym) {
+  return L.divIcon({ className: '', html: `<div class="pin ${cls}">${sym}</div>`, iconSize: [18,18], iconAnchor: [9,9] });
+}
+function setMarker(id, lat, lon, icon, popup, onclick) {
+  if (!lat && !lon) { if (markers[id]) { map.removeLayer(markers[id]); delete markers[id]; } return; }
+  if (markers[id]) { markers[id].setLatLng([lat, lon]); }
+  else {
+    markers[id] = L.marker([lat, lon], { icon }).addTo(map);
+    if (onclick) markers[id].on('click', onclick);
+  }
+  if (popup) markers[id].bindTooltip(popup, { direction: 'top', offset: [0,-8] });
+}
+
+// ── Topbar counters ──
+function refreshCounters() {
+  const all = Object.values(nodes);
+  const online = all.filter(n => n.online).length;
+  const gunCount = Object.values(guns).reduce((a, g) => a + Object.keys(g).length, 0);
+  document.getElementById('units-pill').textContent = `UNITS: ${online}/${all.length}`;
+  document.getElementById('guns-pill').textContent  = `GUNS: ${gunCount}`;
+  document.getElementById('left-count').textContent = all.length;
+}
+
+// ── Unit list (ซ้าย) ──
+function renderUnitList() {
+  const el = document.getElementById('unit-list');
+  const list = Object.values(nodes).sort((a,b) => KEY(a.unit,a.node).localeCompare(KEY(b.unit,b.node)));
+  el.innerHTML = list.map(n => {
+    const k = KEY(n.unit, n.node);
+    const gpsTxt = (n.lat || n.lon) ? `${(+n.lat).toFixed(4)}, ${(+n.lon).toFixed(4)}` : 'NO FIX';
+    return `<div class="unit-card ${n.online?'':'offline'} ${selected===k?'selected':''}" onclick="selectNode('${n.unit}','${n.node}')">
+      <div class="unit-top">
+        <span class="unit-name"><span class="dot ${n.online?'dot-on':'dot-off'}"></span>${n.node}</span>
+        <span class="unit-sub">${n.unit}</span>
+      </div>
+      <div class="unit-sub">${n.name||''}</div>
+      <div class="unit-sub">📍 ${gpsTxt} ${n.bat!=null?`· 🔋${n.bat}%`:''}</div>
+    </div>`;
+  }).join('') || '<div class="empty">ยังไม่มีหน่วยรายงานเข้ามา</div>';
+}
+
+// ── Map markers for a node ──
+function renderNodeMarker(n) {
+  const k = KEY(n.unit, n.node);
+  setMarker('node:'+k, n.lat, n.lon, pinIcon('pin-node', n.online?'◆':'◇'),
+    `${n.node} (${n.unit})${n.name?' · '+n.name:''}`, () => selectNode(n.unit, n.node));
+}
+function renderGunMarkers(k) {
+  const g = guns[k] || {};
+  Object.entries(g).forEach(([id, s]) => {
+    setMarker(`gun:${k}:${id}`, s.lat, s.lon, pinIcon('pin-gun','▲'),
+      `GUN ${id} · ${k}`);
+  });
+}
+
+// ── Select a node → zoom + load detail ──
+async function selectNode(unit, node) {
+  selected = KEY(unit, node);
+  renderUnitList();
+  const n = nodes[selected];
+  document.getElementById('sel-name').textContent = `${node} · ${unit}`;
+  if (n && (n.lat || n.lon)) map.flyTo([n.lat, n.lon], 13, { duration: 0.6 });
+  await loadGuns(unit, node);
+  renderDetail();
+}
+
+async function loadGuns(unit, node) {
+  try {
+    const r = await authFetch(`/api/nodes/${encodeURIComponent(unit)}/${encodeURIComponent(node)}/guns`);
+    const arr = await r.json();
+    const k = KEY(unit, node);
+    guns[k] = {};
+    arr.forEach(g => guns[k][g.gun_id] = g);
+    renderGunMarkers(k);
+    refreshCounters();
+  } catch(e) { /* ศูนย์อาจยังไม่มีข้อมูล */ }
+}
+
+function batClass(b) { return (b!=null && b<=20) ? 'bat-low' : ''; }
+
+function renderDetail() {
+  const el = document.getElementById('detail');
+  if (!selected || !nodes[selected]) { el.innerHTML = '<div class="empty">เลือกหน่วยเพื่อดูรายละเอียด</div>'; return; }
+  const n = nodes[selected];
+  const g = guns[selected] || {};
+  const last = n.last_seen ? new Date(n.last_seen).toLocaleTimeString() : '—';
+  let html = `<div class="kv">
+      <div><span>สถานะ:</span> <b style="color:${n.online?'#39ff14':'#ff3c3c'}">${n.online?'ONLINE':'OFFLINE'}</b></div>
+      <div><span>เห็นล่าสุด:</span> <b>${last}</b></div>
+      <div><span>GPS ศอย.:</span> <b>${(n.lat||n.lon)?`${(+n.lat).toFixed(5)}, ${(+n.lon).toFixed(5)}`:'NO FIX'}</b></div>
+      <div><span>ดาวเทียม/แบต:</span> <b>${n.sats??'--'} sats · ${n.bat??'--'}%</b></div>
+    </div>`;
+  const gunIds = Object.keys(g).sort();
+  if (gunIds.length) {
+    html += gunIds.map(id => {
+      const s = g[id];
+      return `<div class="gun-row">
+        <div class="gh"><span class="gn">▲ GUN ${id}</span><span class="${batClass(s.bat)}">🔋${s.bat??'--'}%</span></div>
+        <div class="grid2">
+          <span>AZ</span><b>${s.az??'--'}</b>
+          <span>EL</span><b>${s.el??'--'}</b>
+          <span>HDG</span><b>${s.hdg??'--'}</b>
+          <span>RSSI/SNR</span><b>${s.rssi??'--'}/${s.snr??'--'}</b>
+        </div>
+        <div class="grid2"><span>พิกัด</span><b>${(s.lat||s.lon)?`${(+s.lat).toFixed(4)},${(+s.lon).toFixed(4)}`:'—'}</b></div>
+      </div>`;
+    }).join('');
+  } else {
+    html += '<div class="empty">ยังไม่มีข้อมูลหมู่ปืนของหน่วยนี้</div>';
+  }
+  html += `<div class="panel-header" style="margin-top:0">◈ ภารกิจยิงล่าสุด</div><div id="fm-list"><div class="empty">กำลังโหลด…</div></div>`;
+  html += `<div class="panel-header" style="margin-top:0">◈ รายงานหลังปฏิบัติ (AAR)
+      <button class="act" onclick="downloadAAR('${n.unit}','${n.node}')">⬇ CSV</button></div>
+      <div id="report-box"><div class="empty">กำลังสรุป…</div></div>`;
+  el.innerHTML = html;
+  loadFireMissions(n.unit, n.node);
+  loadSummary(n.unit, n.node);
+}
+
+// ── รายงานสรุป (D4) ──
+async function loadSummary(unit, node) {
+  try {
+    const r = await authFetch(`/api/reports/summary?unit=${encodeURIComponent(unit)}&node=${encodeURIComponent(node)}`);
+    const s = await r.json();
+    const box = document.getElementById('report-box'); if (!box) return;
+    const fm = s.fire_missions?.total || {};
+    const evErr = (s.events||[]).find(e => e.level==='error');
+    const byGun = (s.fire_missions?.by_gun||[]).map(g => `G${g.gun_id}:${g.missions}`).join(' ');
+    box.innerHTML = `<div class="kv">
+        <div><span>ภารกิจยิงรวม:</span> <b>${fm.missions??0}</b></div>
+        <div><span>ระยะเฉลี่ย:</span> <b>${fm.avg_range_m?Math.round(fm.avg_range_m)+' m':'—'}</b> · <span>ดินเฉลี่ย</span> <b>${fm.avg_charge?(+fm.avg_charge).toFixed(1):'—'}</b></div>
+        <div><span>ต่อกระบอก:</span> <b>${byGun||'—'}</b></div>
+        <div><span>เหตุการณ์ error:</span> <b style="color:${evErr?'#ff6b6b':'#39ff14'}">${evErr?evErr.n:0}</b></div>
+      </div>`;
+  } catch(e) {}
+}
+
+async function downloadAAR(unit, node) {
+  try {
+    const r = await authFetch(`/api/reports/aar/${encodeURIComponent(unit)}/${encodeURIComponent(node)}?format=csv`);
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `AAR_${unit}_${node}.csv`.replace(/\//g,'-');
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  } catch(e) { alert('ดาวน์โหลด AAR ไม่สำเร็จ'); }
+}
+
+async function loadFireMissions(unit, node) {
+  try {
+    const r = await authFetch(`/api/fire_missions?limit=10&unit=${encodeURIComponent(unit)}&node=${encodeURIComponent(node)}`);
+    const arr = await r.json();
+    const box = document.getElementById('fm-list');
+    if (!box) return;
+    box.innerHTML = arr.length ? arr.map(m => `<div class="kv">
+        <div><span>${new Date(m.time).toLocaleTimeString()}</span> · <b>GUN ${m.gun_id??'?'}</b></div>
+        <div><span>เป้า:</span> <b>${m.tgt_lat?`${(+m.tgt_lat).toFixed(4)},${(+m.tgt_lon).toFixed(4)}`:'—'}</b></div>
+        <div><span>AZ/EL:</span> <b>${m.az_mils??'--'} / ${m.el_mils??'--'} mil</b> · <span>CHG</span> <b>${m.charge??'--'}</b></div>
+      </div>`).join('') : '<div class="empty">ไม่มีภารกิจยิง</div>';
+  } catch(e) {}
+}
+
+// ── Live feed ──
+const FEED_MAX = 200;
+function addFeed({time, unit, node, level, msg, cls}) {
+  if (replay.on) return;     // ระหว่าง replay หยุดรับสด
+  const box = document.getElementById('feed-entries');
+  const div = document.createElement('div');
+  div.className = 'ev ' + (cls||level||'');
+  const t = new Date((time||Date.now()/1000)*1000).toLocaleTimeString();
+  div.innerHTML = `<span class="t">${t}</span> <span class="u">${node||''}</span> <span class="m">${msg||''}</span>`;
+  box.prepend(div);
+  while (box.children.length > FEED_MAX) box.removeChild(box.lastChild);
+}
+
+// ── WebSocket realtime ──
+function setWs(state) {
+  const p = document.getElementById('ws-pill');
+  p.className = 'status-pill ' + (state==='up'?'pill-green':state==='init'?'pill-yellow':'pill-red');
+  p.textContent = 'LINK: ' + (state==='up'?'CONNECTED':state==='init'?'CONNECTING':'LOST');
+}
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(TOKEN)}`);
+  ws.onopen = () => setWs('up');
+  ws.onclose = () => { setWs('down'); setTimeout(connectWS, 2000); };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (e) => {
+    let m; try { m = JSON.parse(e.data); } catch { return; }
+    if (m.kind === 'snapshot') { (m.nodes||[]).forEach(applyNode); renderUnitList(); fitAll(); return; }
+    handleLive(m);
+  };
+}
+
+function applyNode(row) {
+  const k = KEY(row.unit, row.node);
+  nodes[k] = Object.assign(nodes[k]||{}, row);
+  renderNodeMarker(nodes[k]);
+}
+
+function handleLive(m) {
+  const k = KEY(m.unit, m.node);
+  const d = m.data || {};
+  if (m.kind === 'node_status') {
+    applyNode({ unit: m.unit, node: m.node, online: !!d.online, last_seen: (m.time||0)*1000 });
+    addFeed({ time: m.time, node: m.node, msg: d.online?'ONLINE':`OFFLINE (${d.reason||''})`, cls: d.online?'':'error' });
+  } else if (m.kind === 'fdc_gps') {
+    applyNode({ unit: m.unit, node: m.node, online: true, last_seen: (m.time||0)*1000,
+                lat: d.lat, lon: d.lon, alt: d.alt, fix: d.fix, sats: d.sats, bat: d.bat, chg: d.chg });
+  } else if (m.kind === 'gun_status') {
+    const id = (m.topic.match(/\/gun\/([^/]+)\/status/)||[])[1] || d.id;
+    if (id != null) { (guns[k] = guns[k]||{})[id] = Object.assign({gun_id:id}, d); renderGunMarkers(k); }
+  } else if (m.kind === 'fire_mission') {
+    setMarker('tgt:'+k, d.tgt_lat, d.tgt_lon, pinIcon('pin-tgt','✸'), `🎯 ${m.node} GUN ${d.gun??''}`);
+    addFeed({ time: m.time, node: m.node, msg: `🎯 FIRE MISSION GUN ${d.gun??'?'} → AZ ${d.az_mils??'--'} EL ${d.el_mils??'--'} CHG ${d.charge??'--'}`, cls: 'fire' });
+  } else if (m.kind === 'event') {
+    addFeed({ time: m.time, node: m.node, level: d.level, msg: d.msg });
+  }
+  renderUnitList(); refreshCounters();
+  if (k === selected && (m.kind==='gun_status' || m.kind==='fdc_gps' || m.kind==='fire_mission')) renderDetail();
+}
+
+function fitAll() {
+  const pts = Object.values(nodes).filter(n => n.lat || n.lon).map(n => [n.lat, n.lon]);
+  if (pts.length) map.fitBounds(pts, { padding: [40,40], maxZoom: 12 });
+}
+
+// ── Replay (ไทม์ไลน์ย้อนหลัง: รวม fire_missions + events ล่าสุด) ──
+const replay = { on:false, items:[], idx:0, timer:null };
+async function toggleReplay() {
+  replay.on = !replay.on;
+  document.getElementById('replay-bar').style.display = replay.on ? 'flex' : 'none';
+  document.getElementById('replay-btn').textContent = replay.on ? '⏹ STOP' : '⏵ REPLAY';
+  if (!replay.on) { clearInterval(replay.timer); return; }
+  // ดึงประวัติ (ทั้งประเทศ หรือเฉพาะหน่วยที่เลือก)
+  const q = selected ? `&unit=${nodes[selected].unit}&node=${nodes[selected].node}` : '';
+  const [fm, ev] = await Promise.all([
+    authFetch(`/api/fire_missions?limit=200${q}`).then(r=>r.json()),
+    authFetch(`/api/events?limit=400${q}`).then(r=>r.json()),
+  ]);
+  const items = [
+    ...fm.map(m => ({ t:new Date(m.time).getTime(), kind:'fire', node:m.node,
+        msg:`🎯 GUN ${m.gun_id??'?'} AZ ${m.az_mils??'--'} EL ${m.el_mils??'--'}`, lat:m.tgt_lat, lon:m.tgt_lon, unit:m.unit, node2:m.node })),
+    ...ev.map(e => ({ t:new Date(e.time).getTime(), kind:e.level||'', node:e.node, msg:e.msg })),
+  ].sort((a,b)=>a.t-b.t);
+  replay.items = items; replay.idx = 0;
+  const sl = document.getElementById('replay-slider');
+  sl.max = Math.max(0, items.length-1); sl.value = 0;
+  document.getElementById('feed-entries').innerHTML = '';
+  rpRender(0);
+}
+function rpRender(i) {
+  i = +i; replay.idx = i;
+  const box = document.getElementById('feed-entries'); box.innerHTML = '';
+  const upto = replay.items.slice(0, i+1);
+  upto.slice(-FEED_MAX).reverse().forEach(it => {
+    const div = document.createElement('div'); div.className = 'ev ' + (it.kind==='fire'?'fire':it.kind);
+    div.innerHTML = `<span class="t">${new Date(it.t).toLocaleTimeString()}</span> <span class="u">${it.node||''}</span> <span class="m">${it.msg||''}</span>`;
+    box.appendChild(div);
+  });
+  const cur = replay.items[i];
+  document.getElementById('rp-time').textContent = cur ? new Date(cur.t).toLocaleString() : '--';
+  if (cur && cur.kind==='fire' && (cur.lat||cur.lon)) {
+    setMarker('replay-tgt', cur.lat, cur.lon, pinIcon('pin-tgt','✸'), `REPLAY 🎯 ${cur.node}`);
+  }
+}
+function rpSeek(v) { rpRender(v); }
+function rpPlayPause() {
+  if (replay.timer) { clearInterval(replay.timer); replay.timer = null; document.getElementById('rp-play').textContent='⏵'; return; }
+  document.getElementById('rp-play').textContent='⏸';
+  replay.timer = setInterval(() => {
+    if (replay.idx >= replay.items.length-1) { clearInterval(replay.timer); replay.timer=null; document.getElementById('rp-play').textContent='⏵'; return; }
+    const sl = document.getElementById('replay-slider'); sl.value = +sl.value+1; rpRender(sl.value);
+  }, 700);
+}
+
+// ── Init / bootstrap (STEP D3: ตรวจ session ก่อน) ──
+async function start() {
+  setWs('init');
+  renderUser();
+  try {
+    // /api/nodes ส่งสถานะ ศอย. + GPS ล่าสุด (lat/lon) มาด้วยในแถวเดียว
+    const arr = await authFetch('/api/nodes').then(r=>r.json());
+    arr.forEach(applyNode);
+    renderUnitList(); refreshCounters(); fitAll();
+  } catch(e) { return; }   // 401 → showLogin() ถูกเรียกใน authFetch แล้ว
+  connectWS();
+}
+async function bootstrap() {
+  // มี token เดิมไหม → ลองดึงตัวตน; ถ้า auth ปิดอยู่ /api/me จะคืน dev user เลย
+  try {
+    const r = await fetch('/api/me', { headers: authHeaders() });
+    if (r.ok) { ME = await r.json(); start(); return; }
+  } catch(e) {}
+  showLogin();
+}
+setInterval(() => document.getElementById('clock').textContent = new Date().toLocaleTimeString(), 1000);
+bootstrap();
+</script>
+</body>
+</html>
