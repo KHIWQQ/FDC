@@ -50,8 +50,8 @@ static const float LORA_CHANNELS[] = {
 };
 #define LORA_CHANNEL    4          // CH4 = 923.0 MHz (กลางย่าน)
 #define LORA_FREQ     (LORA_CHANNELS[LORA_CHANNEL])
-#define LORA_BW        62.5
-#define LORA_SF        12
+#define LORA_BW       125.0     // v7.2 คู่ gun_unit: 62.5→125 + SF12→9 — airtime ลด ~14 เท่า
+#define LORA_SF         9       // *** ต้องตรงกับ gun_unit ทุกกระบอก ไม่งั้นลิงก์เงียบสนิท ***
 #define LORA_CR         5
 #define LORA_SYNC    0xAB
 #define LORA_POWER     22
@@ -234,6 +234,7 @@ void setup() {
   // GPS
   pinMode(GPS_EN_PIN, OUTPUT);
   digitalWrite(GPS_EN_PIN, HIGH);
+  gpsSerial.setRxBufferSize(4096);   // กัน buffer ล้นช่วง LoRa ส่ง blocking ~3s
   gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
 
   // OLED
@@ -248,9 +249,18 @@ void setup() {
   // LoRa
   SPI.begin(RADIO_SCLK_PIN, RADIO_MISO_PIN, RADIO_MOSI_PIN);
   int state = radio.begin();
-  if (state != RADIOLIB_ERR_NONE) {
+  while (state != RADIOLIB_ERR_NONE) {
+    // เดิมวนตายเงียบ ๆ จอค้าง "Initializing..." — เปลี่ยนเป็นเตือนบนจอ + retry
     Serial.printf("{\"type\":\"ERROR\",\"msg\":\"LoRa failed %d\"}\n", state);
-    while (true) delay(1000);
+    display.clearBuffer();
+    display.setFont(u8g2_font_8x13B_tf);
+    display.drawStr(0, 24, "RADIO FAIL");
+    display.setFont(u8g2_font_6x10_tf);
+    char eb[24]; snprintf(eb, 24, "err %d retrying...", state);
+    display.drawStr(0, 44, eb);
+    display.sendBuffer();
+    delay(1000);
+    state = radio.begin();
   }
   radio.setFrequency(LORA_FREQ);
   radio.setBandwidth(LORA_BW);
@@ -404,10 +414,11 @@ void sendPing(uint8_t gun) {
 void handleLoraRx() {
   if (!loraRxFlag) return;
   loraRxFlag = false;
-  uint8_t env[80], buf[64];
+  uint8_t env[80], buf[80];   // buf ≥ env — กันถอดรหัส (plen) ล้น stack
   int state = radio.readData(env, sizeof(env));
   if (state != RADIOLIB_ERR_NONE) { radio.startReceive(); return; }
   size_t envLen = radio.getPacketLength();
+  if (envLen > sizeof(env)) envLen = sizeof(env);   // clamp: getPacketLength ได้ถึง 255 → กันถอดเกินที่รับมาจริง (buf overflow)
   float rssi = radio.getRSSI(), snr = radio.getSNR();
   // STEP B2: ถอดรหัส + ตรวจ MAC + กัน replay ก่อน — ของปลอม/ไม่เข้ารหัสถูกทิ้งเงียบๆ
   uint8_t sender = 0;
