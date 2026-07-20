@@ -18,6 +18,9 @@ import time
 import threading
 import logging
 import webbrowser
+import struct
+import zlib
+import urllib.request
 from flask import Flask, request, jsonify, render_template, Response, stream_with_context
 
 from fdc_radio  import FdcRadio
@@ -59,6 +62,8 @@ CONFIG = load_config()
 BOOT_TIME = time.time()   # server start epoch → ใช้คำนวณ uptime ฝั่ง UI
 # radio.psk (hex32) ใน config.yaml → เปิด challenge-response ยืนยัน dongle ตัวจริง
 radio  = FdcRadio(psk=(CONFIG.get("radio") or {}).get("psk") or None)
+# จังหวะ heartbeat (วินาที) — เว็บ broadcast ping ทุกเท่านี้ ให้ตัวชี้ LINK ที่หมู่ปืนสด (0 = ปิด)
+HEARTBEAT_SEC = (CONFIG.get("radio") or {}).get("heartbeat_sec", 10)
 uplink = FdcUplink(CONFIG)
 
 # ============================================================
@@ -84,10 +89,14 @@ state = {
             "az": 0, "el": 0,
             "hdg": None,
             "bat": 0, "rssi": 0, "snr": 0.0,
+            "role": "primary" if i == 1 else "backup",   # ที่ตั้งหลัก 1 / สำรอง 3
             "last_seen": None
         } for i in range(1, 5)
     },
     "targets": {},          # id → {lat, lon, name, note}
+    "firing_pos": {         # ที่ตั้งยิงบนแผนที่ — หลัก 1 + สำรอง 3
+        "primary": None, "backup": [None, None, None]
+    },
     "last_fire": None,      # last fire solution
     "log": []               # last 50 events
 }
@@ -200,8 +209,9 @@ def radio_poller():
                         "sats":  msg.get("sats", 0),
                         "valid": msg.get("fix", 0) >= 2
                     })
-                push_sse("fdc_gps", state["fdc"])
-                uplink.publish("fdc_gps", state["fdc"])
+                    fdc_snap = dict(state["fdc"])   # snapshot ใต้ lock กัน read แบบ torn
+                push_sse("fdc_gps", fdc_snap)
+                uplink.publish("fdc_gps", fdc_snap)
 
             elif mtype == "GUN_STATUS":
                 gun_id = str(msg.get("gun", 0))
@@ -219,8 +229,9 @@ def radio_poller():
                             "snr":       msg.get("snr", 0),
                             "last_seen": time.time()
                         })
-                    push_sse("gun_status", state["guns"][gun_id])
-                    uplink.publish(f"gun/{gun_id}/status", state["guns"][gun_id])
+                        gun_snap = dict(state["guns"][gun_id])   # snapshot ใต้ lock
+                    push_sse("gun_status", gun_snap)
+                    uplink.publish(f"gun/{gun_id}/status", gun_snap)
 
             elif mtype == "GUN_ACK":
                 log_event(f"Gun {msg.get('gun')} ACK seq={msg.get('seq')} ok={msg.get('ok')}")
@@ -245,14 +256,118 @@ def index():
     return render_template("index.html")
 
 
+# ============================================================
+#  Offline map tiles — caching proxy (/tiles/<layer>/z/x/y.png)
+#  ออนไลน์ : ดึงจาก upstream + เซฟลงแคช   |  ออฟไลน์ : เสิร์ฟจากแคช
+#  ไม่มีในแคช + ออฟไลน์ : ไทล์เทาเปล่า (แผนที่ไม่พัง)
+#  → เปิดดูพื้นที่ปฏิบัติการตอนมีเน็ตที่ฐาน 1 ครั้ง แล้วออกสนามใช้แบบไม่มีเน็ตได้
+# ============================================================
+
+# แคชต้องเขียนได้ — อย่าใช้ _MEIPASS (read-only ตอนแพ็กเป็น .exe)
+if getattr(sys, "frozen", False):
+    _tile_base = os.path.dirname(sys.executable)
+else:
+    _tile_base = os.path.dirname(os.path.abspath(__file__))
+TILE_CACHE_DIR = os.path.join(_tile_base, "tile_cache")
+
+# layer → upstream URL — ใช้ Esri ArcGIS ทั้งหมด (ลำดับ z/y/x) เพราะเข้าถึงได้เสถียร
+# ไม่ผูกกับ OSM/OpenTopoMap ที่บล็อกการใช้ผ่าน proxy/ปริมาณมาก (คืน 403)
+TILE_UPSTREAM = {
+    "street": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+    "sat":    "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    "topo":   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+}
+TILE_UA = "FDC-FCS/1.0 (artillery fire direction center; offline field tile cache)"
+
+
+def _solid_png(w: int, h: int, rgb: tuple) -> bytes:
+    """PNG สีเดียว (stdlib ล้วน) — ใช้เป็นไทล์ placeholder ตอนออฟไลน์+ไม่มีในแคช."""
+    def _chunk(typ: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + typ + data +
+                struct.pack(">I", zlib.crc32(typ + data) & 0xffffffff))
+    sig  = b"\x89PNG\r\n\x1a\n"
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)      # 8-bit truecolour RGB
+    raw  = (b"\x00" + bytes(rgb) * w) * h                    # filter byte 0 + pixels/แถว
+    return sig + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(raw, 9)) + _chunk(b"IEND", b"")
+
+
+PLACEHOLDER_TILE = _solid_png(256, 256, (40, 46, 40))        # เทาเข้ม = ยังไม่มีในแคช
+
+
+def _img_ctype(data: bytes) -> str:
+    if data[:3] == b"\xff\xd8\xff":       return "image/jpeg"   # Esri = JPEG
+    if data[:8] == b"\x89PNG\r\n\x1a\n":  return "image/png"
+    return "image/png"
+
+
+def _tile_resp(data: bytes, status: str, cache: bool = True) -> Response:
+    hdrs = {"X-Tile-Cache": status}
+    if cache:
+        hdrs["Cache-Control"] = "public, max-age=604800"
+    return Response(data, mimetype=_img_ctype(data), headers=hdrs)
+
+
+@app.route("/tiles/<layer>/<int:z>/<int:x>/<int:y>.png")
+def tile_proxy(layer, z, x, y):
+    tmpl = TILE_UPSTREAM.get(layer)
+    if tmpl is None:
+        return _tile_resp(PLACEHOLDER_TILE, "bad-layer", cache=False)
+    if not (0 <= z <= 22 and 0 <= x < (1 << z) and 0 <= y < (1 << z)):
+        return _tile_resp(PLACEHOLDER_TILE, "oob", cache=False)
+
+    path = os.path.join(TILE_CACHE_DIR, layer, str(z), str(x), f"{y}.png")
+
+    # 1) มีในแคช → เสิร์ฟทันที (เส้นทางออฟไลน์)
+    if os.path.isfile(path):
+        try:
+            with open(path, "rb") as f:
+                return _tile_resp(f.read(), "hit")
+        except OSError:
+            pass  # อ่านไม่ได้ → ลองดึงใหม่
+
+    # 2) ไม่มีในแคช → ดึงจาก upstream (ต้องมีเน็ต) แล้วเซฟ
+    try:
+        req = urllib.request.Request(tmpl.format(z=z, x=x, y=y),
+                                     headers={"User-Agent": TILE_UA})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data  = r.read()
+            ctype = r.headers.get("Content-Type", "")
+        # ต้องเป็น "รูปจริง" เท่านั้นถึงแคช — กันหน้า block/HTML ที่ตอบ 200 มาปนเป็นไทล์
+        if not ctype.startswith("image/") or len(data) < 100:
+            return _tile_resp(PLACEHOLDER_TILE, "bad-upstream", cache=False)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{threading.get_ident()}.tmp"          # atomic write กัน partial read
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+        return _tile_resp(data, "miss-fetched")
+    except Exception:
+        # 3) ออฟไลน์/upstream ล่ม + ไม่มีในแคช → ไทล์เปล่า
+        return _tile_resp(PLACEHOLDER_TILE, "offline-miss", cache=False)
+
+
 @app.route("/api/state")
 def api_state():
     with state_lock:
         return jsonify(dict(state, boot_time=BOOT_TIME))
 
 
-def execute_fire_mission(tgt_lat, tgt_lon, gun_id, charge=None, source="local"):
-    """Compute + send a fire mission. Shared by the web route and MQTT downlink.
+def _to_float(v):
+    """Parse to float, or None if blank/invalid (for optional altitude fields)."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def execute_fire_mission(tgt_lat, tgt_lon, gun_id, charge=None, alt_diff_m=0.0,
+                         send=True, source="local", order="FIRE",
+                         gun_lat_override=None, gun_lon_override=None):
+    """Compute a fire solution; transmit to the gun only when send=True.
+
+    send=False → CALCULATE: คำนวณ/พรีวิวเท่านั้น (ไม่ส่งวิทยุ ไม่บันทึก/ไม่ broadcast)
+    send=True  → FIRE: ส่งคำสั่งถึงปืนจริง + log + push SSE/uplink
+    alt_diff_m = target altitude − gun altitude (m); 0 = no angle-of-site correction.
 
     Returns (result_dict, http_status).
     """
@@ -261,17 +376,22 @@ def execute_fire_mission(tgt_lat, tgt_lon, gun_id, charge=None, source="local"):
         return {"error": "tgt_lat and tgt_lon required"}, 400
 
     with state_lock:
-        gun = state["guns"].get(gun_id)
+        gun = dict(state["guns"].get(gun_id) or {})   # copy ใต้ lock กัน lat/lon ถูกแก้กลางคัน
         fdc = dict(state["fdc"])
 
     if not gun:
         return {"error": f"Gun {gun_id} not found"}, 404
 
-    # Use gun position if available, else FDC as fallback
-    if gun["lat"] != 0 and gun["lon"] != 0:
+    # ตำแหน่งปืนที่ใช้คำนวณ: ปลายทางที่วางแผน (override) > GPS ปืนจริง > FDC (สำรอง)
+    if gun_lat_override is not None and gun_lon_override is not None:
+        gun_lat, gun_lon = gun_lat_override, gun_lon_override
+        base = "planned"   # เสมือนปืนไปอยู่ที่ตั้งปลายทางแล้ว (เตรียมค่ายิงก่อนย้ายจริง)
+    elif gun["lat"] != 0 and gun["lon"] != 0:
         gun_lat, gun_lon = gun["lat"], gun["lon"]
+        base = "current"   # ตำแหน่งปืนปัจจุบัน
     elif fdc["valid"]:
         gun_lat, gun_lon = fdc["lat"], fdc["lon"]
+        base = "fdc"
     else:
         return {"error": "No gun or FDC GPS fix"}, 400
 
@@ -282,28 +402,36 @@ def execute_fire_mission(tgt_lat, tgt_lon, gun_id, charge=None, source="local"):
         fdc_lat=fdc_lat, fdc_lon=fdc_lon,
         gun_lat=gun_lat, gun_lon=gun_lon,
         tgt_lat=tgt_lat, tgt_lon=tgt_lon,
-        charge=charge
+        charge=charge,
+        alt_diff_m=alt_diff_m,
     )
 
     if solution.get("error"):
         return {"error": solution["error"]}, 422
 
-    # Send to dongle
     az = solution["az_mils_corrected"] or solution["az_mils"]
     el = solution["el_mils"]
     chg = solution["charge"]
-
-    sent = radio.send_fire_cmd(int(gun_id), az, el, chg)
-
     solution["gun_id"] = int(gun_id)
-    solution["sent"]   = sent
     solution["source"] = source        # 'local' (เว็บ ศอย.) หรือ 'central' (สั่งจากศูนย์)
+    solution["order"]  = order         # 'FIRE' = ยิงทันที | 'STANDBY' = เล็ง/รอสั่งยิง
+    solution["base"]   = base          # 'planned' = เสมือนอยู่ปลายทางแผนย้าย | 'current' = ปืนปัจจุบัน | 'fdc'
+
+    # CALCULATE — คำนวณอย่างเดียว ยังไม่ส่งถึงปืน ไม่บันทึก/ไม่ broadcast
+    if not send:
+        solution["sent"] = False
+        return solution, 200
+
+    # FIRE/STANDBY — ส่งคำสั่งถึงปืนจริงผ่านวิทยุ แล้วบันทึก + แจ้งเรียลไทม์/อัปลิงก์
+    sent = radio.send_fire_cmd(int(gun_id), az, el, chg, order=order)
+    solution["sent"] = sent
 
     with state_lock:
         state["last_fire"] = solution
 
+    verb = "ยิง (FIRE)" if order == "FIRE" else "เล็ง/รอสั่งยิง (STANDBY)"
     log_event(
-        f"Fire mission [{source}] → Gun {gun_id}: AZ={az} EL={el} CHG={chg} "
+        f"Fire mission [{source}] {verb} → Gun {gun_id}: AZ={az} EL={el} CHG={chg} "
         f"Range={solution['range_m']}m", "fire"
     )
     push_sse("fire_mission", solution)
@@ -315,11 +443,20 @@ def execute_fire_mission(tgt_lat, tgt_lon, gun_id, charge=None, source="local"):
 @app.route("/api/fire_mission", methods=["POST"])
 def api_fire_mission():
     body = request.get_json(force=True)
+    # ความสูงเป้า/ปืน (optional) → ผลต่างสำหรับ angle of site; ขาดค่าใดค่าหนึ่ง = ไม่ชดเชย
+    tgt_alt = _to_float(body.get("tgt_alt"))
+    gun_alt = _to_float(body.get("gun_alt"))
+    alt_diff = (tgt_alt - gun_alt) if (tgt_alt is not None and gun_alt is not None) else 0.0
     result, code = execute_fire_mission(
         tgt_lat=body.get("tgt_lat"),
         tgt_lon=body.get("tgt_lon"),
         gun_id=body.get("gun", "1"),
         charge=body.get("charge"),     # None = auto
+        alt_diff_m=alt_diff,
+        send=bool(body.get("send", True)),   # CALCULATE ส่ง send:false → คำนวณเฉยๆ
+        order=str(body.get("order", "FIRE")).upper(),  # FIRE = ยิง | STANDBY = เล็ง/รอยิง
+        gun_lat_override=_to_float(body.get("gun_lat")),  # ระบุ = คำนวณเสมือนปืนอยู่พิกัดนี้ (แผนย้าย)
+        gun_lon_override=_to_float(body.get("gun_lon")),
         source="local",
     )
     return jsonify(result), code
@@ -338,6 +475,44 @@ def api_ping(gun_id):
     return jsonify({"sent": ok, "gun": gun_id})
 
 
+@app.route("/api/gun/<int:gun_id>/role", methods=["POST"])
+def api_gun_role(gun_id):
+    """ตั้งบทบาทที่ตั้งยิงของปืน: 'primary' (หลัก — ได้กระบอกเดียว) หรือ 'backup' (สำรอง)."""
+    body = request.get_json(force=True) or {}
+    role = str(body.get("role", "primary")).lower()
+    gid = str(gun_id)
+    with state_lock:
+        if gid not in state["guns"]:
+            return jsonify({"error": f"Gun {gun_id} not found"}), 404
+        if role == "primary":
+            # มีปืนหลักได้กระบอกเดียว — ที่เหลือกลายเป็นสำรองทั้งหมด
+            for k, g in state["guns"].items():
+                g["role"] = "primary" if k == gid else "backup"
+        else:
+            state["guns"][gid]["role"] = "backup"
+        affected = [dict(v) for v in state["guns"].values()]
+    for g in affected:
+        push_sse("gun_status", g)
+    log_event(f"Gun {gun_id} → {'ที่ตั้งหลัก' if role == 'primary' else 'ที่ตั้งสำรอง'}")
+    return jsonify({"ok": True, "gun": gun_id, "role": role})
+
+
+@app.route("/api/firing_pos", methods=["POST"])
+def api_firing_pos():
+    """ตั้ง/อัปเดตที่ตั้งยิงบนแผนที่: primary={lat,lon} และ/หรือ backup=[{lat,lon} ×3]."""
+    body = request.get_json(force=True) or {}
+    with state_lock:
+        fp = state["firing_pos"]
+        if "primary" in body:
+            fp["primary"] = body["primary"]
+        if "backup" in body:
+            bk = list(body["backup"] or [])
+            fp["backup"] = (bk + [None, None, None])[:3]
+        snapshot = {"primary": fp["primary"], "backup": list(fp["backup"])}
+    push_sse("firing_pos", snapshot)
+    return jsonify({"ok": True, "firing_pos": snapshot})
+
+
 @app.route("/api/target", methods=["POST"])
 def api_add_target():
     body = request.get_json(force=True)
@@ -351,6 +526,10 @@ def api_add_target():
             "note": body.get("note", "")
         }
     push_sse("target_update", state["targets"][tgt_id])
+    # แชร์เป้าขึ้น COP ระดับประเทศ "ตั้งแต่ปักหมุด" (ก่อนยิง) — retained = state ปัจจุบัน
+    uplink.publish(f"target/{tgt_id}",
+                   {**state["targets"][tgt_id], "active": True, "ts": time.time()},
+                   retain=True)
     return jsonify({"ok": True, "id": tgt_id})
 
 
@@ -360,6 +539,10 @@ def api_del_target(tgt_id):
         removed = state["targets"].pop(tgt_id, None)
     if removed:
         push_sse("target_remove", {"id": tgt_id})
+        # ลบเป้าบน COP ด้วย (tombstone retained — กวาด retained เดิมที่ broker)
+        uplink.publish(f"target/{tgt_id}",
+                       {"id": tgt_id, "active": False, "ts": time.time()},
+                       retain=True)
     return jsonify({"ok": removed is not None})
 
 
@@ -395,6 +578,21 @@ def api_stream():
 
 
 # ============================================================
+#  Link heartbeat — auto-ping ให้ตัวชี้ LINK ที่หมู่ปืนเป็น heartbeat สด
+# ============================================================
+
+def heartbeat_loop():
+    """ทุก HEARTBEAT_SEC วินาที ส่ง broadcast ping 1 ครั้ง (ถึงทุกกระบอก).
+    หมู่ปืน stamp lastFdcRx ทุกแพ็กเก็ต FDC ที่ผ่าน MAC+CRC → 'FDC: <กี่วิ>'
+    บนจอกลายเป็นนาฬิกาเต้นจริง. ใช้ broadcast เพราะ SF12 airtime สูง
+    (ping ทีละกระบอก + รอ pong จะกินอากาศเกินงบเมื่อมีหลายกระบอก)."""
+    while True:
+        time.sleep(HEARTBEAT_SEC)
+        if radio.connected:
+            radio.ping_broadcast()
+
+
+# ============================================================
 #  Entry point
 # ============================================================
 
@@ -425,6 +623,10 @@ if __name__ == "__main__":
 
     poller = threading.Thread(target=radio_poller, daemon=True)
     poller.start()
+
+    if HEARTBEAT_SEC and HEARTBEAT_SEC > 0:
+        threading.Thread(target=heartbeat_loop, daemon=True).start()
+        log_event(f"Link heartbeat: broadcast ping ทุก {HEARTBEAT_SEC}s")
 
     open_browser_later("http://localhost:5000")
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Artillery FCS — Fire Direction Center</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="/static/leaflet/leaflet.css"/>
+<script src="/static/leaflet/leaflet.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -142,6 +142,7 @@
   #log-panel { flex: 1; display: flex; flex-direction: column; min-height: 120px; }
   #log-entries {
     flex: 1;
+    min-height: 0;          /* ให้กล่อง log ย่อ/สกรอลล์ในตัวได้ ไม่ดันพื้นที่ */
     overflow-y: auto;
     padding: 6px 10px;
     font-size: 10px;
@@ -256,6 +257,56 @@
   }
   .btn-calc:hover { background: #1a2e1a; }
 
+  /* STANDBY — ส่งให้ปืนเล็ง/รอสั่งยิง (ยังไม่ยิง) */
+  .btn-cel {
+    margin: 10px 12px 0;
+    width: calc(100% - 24px);
+    padding: 9px;
+    background: #2a2400;
+    border: 2px solid #ccaa00;
+    color: #ffd700;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    font-weight: bold;
+    letter-spacing: 2px;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: all 0.15s;
+  }
+  .btn-cel:hover    { background: #3a3300; border-color: #ffd700; }
+  .btn-cel:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  /* Role badge (หลัก/สำรอง) บนการ์ดปืน */
+  .role-badge {
+    font-size: 9px; padding: 1px 6px; border-radius: 2px; margin-left: 6px;
+    border: 1px solid currentColor; letter-spacing: 1px;
+  }
+  .role-primary { color: #ffd700; }
+  .role-backup  { color: #6a9a6a; }
+  .btn-sm.role-set         { border-color: #6a6a3a; color: #ffd700; }
+  .btn-sm.role-set:disabled{ opacity: 0.35; cursor: default; }
+
+  /* Leaflet layer switcher — ธีมเข้ม */
+  .leaflet-control-layers {
+    background: #0d1a0d !important; color: #39ff14 !important;
+    border: 1px solid #3a6a3a !important; border-radius: 2px !important;
+    font-family: 'Courier New', monospace !important; font-size: 11px !important;
+  }
+  .leaflet-control-layers-toggle { background-color: #0d1a0d !important; }
+  .leaflet-control-layers label  { color: #cfc !important; }
+  .leaflet-control-layers-selector { accent-color: #39ff14; }
+
+  /* ปุ่มเลือกช่องที่ตั้งยิง (หลัก/สำรอง1-3) ในแถบโหมด */
+  .slot-btn {
+    font-family:'Courier New',monospace; font-size:10px; padding:2px 7px;
+    background:transparent; border:1px solid #3a6a3a; color:#7f9a7f;
+    cursor:pointer; border-radius:2px;
+  }
+  .slot-btn:hover      { background:#142014; }
+  .slot-btn.set        { color:#7fff00; }              /* ช่องที่วางแล้ว */
+  .slot-btn.active     { border-color:#ffd700; color:#ffd700; background:#2a2400; }
+  .slot-btn:disabled   { opacity:0.3; cursor:not-allowed; }   /* ปลายทางที่ยังไม่ได้ตั้งที่ตั้งยิง */
+
   /* Map coord display */
   #coord-bar {
     background: rgba(0,0,0,0.7);
@@ -312,6 +363,7 @@
   <div id="left">
     <div class="panel-header">◈ FDC Position</div>
     <div id="fdc-pos">
+      <div style="margin-bottom:4px"><span>MGRS </span><b id="fdc-mgrs" style="color:#7fff00">--</b></div>
       <div><span>LAT </span><b id="fdc-lat">--</b></div>
       <div><span>LON </span><b id="fdc-lon">--</b></div>
       <div><span>ALT </span><b id="fdc-alt">--</b><span> m</span></div>
@@ -321,8 +373,10 @@
     <div class="panel-header">◈ Gun Units</div>
     <div id="gun-cards"></div>
 
-    <div class="panel-header" id="log-panel">◈ Event Log</div>
-    <div id="log-entries"></div>
+    <div id="log-panel">
+      <div class="panel-header">◈ Event Log</div>
+      <div id="log-entries"></div>
+    </div>
   </div>
 
   <!-- Map -->
@@ -332,9 +386,26 @@
       <button class="mode-btn active" id="mode-view" onclick="setMode('view')">VIEW</button>
       <button class="mode-btn" id="mode-target" onclick="setMode('target')">SET TARGET</button>
       <button class="mode-btn" id="mode-gun" onclick="setMode('gun')">MOVE GUN</button>
+      <button class="mode-btn" id="mode-firepos" onclick="setMode('firepos')">ที่ตั้งยิง</button>
+      <span id="firepos-slots" style="display:none;gap:4px;align-items:center">
+        <span style="color:#888;font-size:10px">วาง/ย้าย:</span>
+        <button class="slot-btn active" id="slot-0" onclick="armFirePosSlot(0)">★หลัก</button>
+        <button class="slot-btn" id="slot-1" onclick="armFirePosSlot(1)">สำรอง1</button>
+        <button class="slot-btn" id="slot-2" onclick="armFirePosSlot(2)">สำรอง2</button>
+        <button class="slot-btn" id="slot-3" onclick="armFirePosSlot(3)">สำรอง3</button>
+      </span>
+      <span id="movegun-dests" style="display:none;gap:4px;align-items:center">
+        <span style="color:#888;font-size:10px">ย้ายไป:</span>
+        <button class="slot-btn" id="dest-0" onclick="planGunMoveTo(0)">★หลัก</button>
+        <button class="slot-btn" id="dest-1" onclick="planGunMoveTo(1)">สำรอง1</button>
+        <button class="slot-btn" id="dest-2" onclick="planGunMoveTo(2)">สำรอง2</button>
+        <button class="slot-btn" id="dest-3" onclick="planGunMoveTo(3)">สำรอง3</button>
+      </span>
+      <button class="mode-btn" id="btn-clr-plan" onclick="clearPlans()"
+              style="margin-left:auto;border-color:#6a3a3a;color:#c88" title="ล้างแผนย้ายปืนทั้งหมด">⟲ CLR</button>
     </div>
     <div id="map"></div>
-    <div id="coord-bar">Click map for coordinates | Mode: <span id="mode-label">VIEW</span></div>
+    <div id="coord-bar"><span id="cb-pos">Click map for coordinates</span> | Mode: <span id="mode-label">VIEW</span> <span id="mode-hint" style="color:#888"></span></div>
   </div>
 
   <!-- Right Panel: Fire Mission -->
@@ -351,44 +422,70 @@
       </select>
     </div>
 
-    <div id="tgt-label">⊕ Click map in TARGET mode to set coords</div>
+    <div id="tgt-label">⊕ คลิกแผนที่โหมด TARGET หรือพิมพ์ MGRS / lat-lon</div>
 
     <div class="form-group">
+      <label>Target MGRS</label>
+      <input type="text" id="fm-mgrs" placeholder="47P PR 12345 67890"
+             onchange="applyMgrsInput()" autocomplete="off">
+    </div>
+    <div class="form-group">
       <label>Target Latitude</label>
-      <input type="number" id="fm-lat" placeholder="14.0000" step="0.0001">
+      <input type="number" id="fm-lat" placeholder="14.0000" step="0.0001" onchange="syncMgrsFromLatLon()">
     </div>
     <div class="form-group">
       <label>Target Longitude</label>
-      <input type="number" id="fm-lon" placeholder="101.0000" step="0.0001">
+      <input type="number" id="fm-lon" placeholder="101.0000" step="0.0001" onchange="syncMgrsFromLatLon()">
+    </div>
+    <div class="form-group">
+      <label>ความสูงเป้า / Target Alt (ม.)</label>
+      <input type="number" id="fm-tgt-alt" placeholder="(เว้นว่าง = ไม่ชดเชยความสูง)" step="1">
+    </div>
+    <div class="form-group">
+      <label>ความสูงปืน/ศอย. / Gun Alt (ม.)</label>
+      <input type="number" id="fm-gun-alt" placeholder="auto จาก GPS ศอย." step="1">
     </div>
     <div class="form-group">
       <label>Target Name</label>
       <input type="text" id="fm-name" placeholder="TGT-001" value="TGT-001">
     </div>
     <div class="form-group">
-      <label>Charge (1-8 / Auto)</label>
+      <label>Charge (1-7 / Auto)</label>
       <select id="fm-charge">
         <option value="">AUTO</option>
         <option value="1">1</option><option value="2">2</option>
         <option value="3">3</option><option value="4">4</option>
         <option value="5">5</option><option value="6">6</option>
-        <option value="7">7</option><option value="8">8</option>
+        <option value="7">7</option>
       </select>
+    </div>
+
+    <div class="form-group" id="from-planned-group" style="display:none">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none;color:#ffd700">
+        <input type="checkbox" id="fm-from-planned" checked style="width:auto">
+        <span id="from-planned-label">คำนวณเสมือนปืนอยู่ที่ปลายทางที่วางแผน</span>
+      </label>
     </div>
 
     <button class="btn-calc" onclick="calcFire()">⊕ CALCULATE</button>
 
     <!-- Solution display -->
     <div id="solution" style="display:none">
+      <div class="sol-row"><span>ฐานคำนวณ</span>   <b id="sol-base" style="font-size:11px">--</b></div>
+      <div class="sol-row"><span>TGT MGRS</span>   <b id="sol-mgrs" style="font-size:11px;color:#7fff00">--</b></div>
       <div class="sol-row"><span>AZIMUTH</span>    <b id="sol-az">--</b></div>
       <div class="sol-row"><span>ELEVATION</span>  <b id="sol-el">--</b></div>
+      <div class="sol-row"><span>SITE (มุมที่ตั้ง)</span> <b id="sol-site">--</b></div>
       <div class="sol-row"><span>RANGE</span>      <b id="sol-range">--</b></div>
       <div class="sol-row"><span>CHARGE</span>     <b id="sol-chg">--</b></div>
       <div class="sol-row"><span>DRIFT</span>      <b id="sol-drift">--</b></div>
     </div>
 
-    <button class="btn-fire" id="btn-fire" disabled onclick="sendFire()">
-      ◈ FIRE ◈
+    <button class="btn-cel" id="btn-cel" disabled onclick="sendFire('STANDBY')">
+      ◈ STANDBY — เล็ง/รอสั่งยิง ◈
+    </button>
+    <button class="btn-fire" id="btn-fire" disabled onclick="sendFire('FIRE')">
+      ◈ FIRE — ยิงทันที ◈
     </button>
 
     <div class="panel-header" style="margin-top:8px">◈ Last Solution</div>
@@ -399,6 +496,92 @@
 
 <script>
 // ============================================================
+//  MGRS — self-contained lat/lon ⇄ MGRS (offline-safe, ไม่พึ่ง CDN)
+//  ฟอร์ม §1/§5: แสดง/ระบุพิกัดแบบ MGRS — ported from proj4js/mgrs (MIT)
+//  ทดสอบแล้ว: (0,0)=31NAA6602100000, WashMon=18SUJ, round-trip < 1 m
+// ============================================================
+const MGRS = (function(){
+  const A_=65,I_=73,O_=79,V_=86,Z_=90;
+  const COL='AJSAJS', ROW='AFAFAF';
+  const d2r=d=>d*Math.PI/180, r2d=r=>180*r/Math.PI;
+  function band(lat){ if(lat>84||lat<-80) return 'Z'; let i=Math.floor((lat+80)/8); if(i===20)i=19; return 'CDEFGHJKLMNPQRSTUVWX'.charAt(i); }
+  function LLtoUTM(lat,lon){
+    const a=6378137.0,e2=0.00669438,k0=0.9996,ep2=e2/(1-e2);
+    const la=d2r(lat),lo=d2r(lon);
+    let z=Math.floor((lon+180)/6)+1; if(lon===180)z=60;
+    if(lat>=56&&lat<64&&lon>=3&&lon<12)z=32;
+    if(lat>=72&&lat<84){ if(lon>=0&&lon<9)z=31; else if(lon<21)z=33; else if(lon<33)z=35; else if(lon<42)z=37; }
+    const lo0=d2r((z-1)*6-180+3);
+    const N=a/Math.sqrt(1-e2*Math.sin(la)*Math.sin(la));
+    const T=Math.tan(la)*Math.tan(la), C=ep2*Math.cos(la)*Math.cos(la), Ax=Math.cos(la)*(lo-lo0);
+    const M=a*((1-e2/4-3*e2*e2/64-5*e2*e2*e2/256)*la-(3*e2/8+3*e2*e2/32+45*e2*e2*e2/1024)*Math.sin(2*la)+(15*e2*e2/256+45*e2*e2*e2/1024)*Math.sin(4*la)-(35*e2*e2*e2/3072)*Math.sin(6*la));
+    const E=k0*N*(Ax+(1-T+C)*Ax*Ax*Ax/6+(5-18*T+T*T+72*C-58*ep2)*Math.pow(Ax,5)/120)+500000.0;
+    let Nn=k0*(M+N*Math.tan(la)*(Ax*Ax/2+(5-T+9*C+4*C*C)*Math.pow(Ax,4)/24+(61-58*T+T*T+600*C-330*ep2)*Math.pow(Ax,6)/720));
+    if(lat<0)Nn+=1e7;
+    return {e:E,n:Nn,z:z,b:band(lat)};
+  }
+  function setForZone(i){ let s=i%6; if(s===0)s=6; return s; }
+  function id100k(e,n,z){
+    const set=setForZone(z), col=Math.floor(e/100000), row=Math.floor(n/100000)%20, idx=set-1;
+    const co=COL.charCodeAt(idx), rO=ROW.charCodeAt(idx);
+    let ci=co+col-1, ri=rO+row, ro=false;
+    if(ci>Z_){ci=ci-Z_+A_-1;ro=true;}
+    if(ci===I_||(co<I_&&ci>I_)||((ci>I_||co<I_)&&ro))ci++;
+    if(ci===O_||(co<O_&&ci>O_)||((ci>O_||co<O_)&&ro)){ci++; if(ci===I_)ci++;}
+    if(ci>Z_)ci=ci-Z_+A_-1;
+    ro=false;
+    if(ri>V_){ri=ri-V_+A_-1;ro=true;}
+    if(ri===I_||(rO<I_&&ri>I_)||((ri>I_||rO<I_)&&ro))ri++;
+    if(ri===O_||(rO<O_&&ri>O_)||((ri>O_||rO<O_)&&ro)){ri++; if(ri===I_)ri++;}
+    if(ri>V_)ri=ri-V_+A_-1;
+    return String.fromCharCode(ci)+String.fromCharCode(ri);
+  }
+  function toMGRS(lat,lon,acc){
+    acc=acc||5;
+    if(isNaN(lat)||isNaN(lon)||lat>84||lat<-80) return null;
+    const u=LLtoUTM(lat,lon);
+    const se=('00000'+Math.floor(u.e)), sn=('00000'+Math.floor(u.n));
+    return u.z+u.b+id100k(u.e,u.n,u.z)+se.substr(se.length-5,acc)+sn.substr(sn.length-5,acc);
+  }
+  function format(s){ if(!s) return '--'; const m=s.match(/^(\d+[C-X])([A-Z]{2})(\d+)$/); if(!m) return s; const d=m[3],h=d.length/2; return m[1]+' '+m[2]+' '+d.substr(0,h)+' '+d.substr(h); }
+  const MINN={C:11,D:20,E:28,F:37,G:46,H:55,J:64,K:73,L:82,M:91,N:0,P:8,Q:17,R:26,S:35,T:44,U:53,V:62,W:70,X:79};
+  function eFromChar(c,set){ let cur=COL.charCodeAt(set-1),val=100000.0,rw=false,t=c.charCodeAt(0); while(cur!==t){cur++; if(cur===I_)cur++; if(cur===O_)cur++; if(cur>Z_){if(rw)throw 0; cur=A_; rw=true;} val+=100000.0;} return val; }
+  function nFromChar(c,set){ if(c>'V')throw 0; let cur=ROW.charCodeAt(set-1),val=0.0,rw=false,t=c.charCodeAt(0); while(cur!==t){cur++; if(cur===I_)cur++; if(cur===O_)cur++; if(cur>V_){if(rw)throw 0; cur=A_; rw=true;} val+=100000.0;} return val; }
+  function decode(str){
+    str=(str||'').replace(/ /g,'').toUpperCase();
+    if(str.length<5) throw 0;
+    let i=0,sb=''; while(i<2&&/[0-9]/.test(str.charAt(i))){sb+=str.charAt(i);i++;}
+    const z=parseInt(sb,10); if(!z||z<1||z>60)throw 0;
+    const b=str.charAt(i++); if('ABIOYZ'.indexOf(b)!==-1||b<'C'||b>'X')throw 0;
+    const hk=str.substring(i,i+2); i+=2; const set=setForZone(z);
+    let e=eFromChar(hk.charAt(0),set), n=nFromChar(hk.charAt(1),set);
+    while(n<MINN[b]*100000) n+=2000000;
+    const rem=str.length-i; if(rem%2!==0)throw 0;
+    const sep=rem/2; let acc=100000;
+    if(sep>0){ acc=100000/Math.pow(10,sep); e+=parseFloat(str.substr(i,sep))*acc; n+=parseFloat(str.substr(i+sep,sep))*acc; }
+    return {e:e,n:n,b:b,z:z,acc:acc};
+  }
+  function UTMtoLL(e,n,z,b){
+    const a=6378137.0,e2=0.00669438,k0=0.9996, e1=(1-Math.sqrt(1-e2))/(1+Math.sqrt(1-e2)), ep2=e2/(1-e2);
+    const x=e-500000.0; let y=n; if(b<'N')y-=1e7;
+    const lo0=(z-1)*6-180+3, M=y/k0, mu=M/(a*(1-e2/4-3*e2*e2/64-5*e2*e2*e2/256));
+    const p1=mu+(3*e1/2-27*e1*e1*e1/32)*Math.sin(2*mu)+(21*e1*e1/16-55*e1*e1*e1*e1/32)*Math.sin(4*mu)+(151*e1*e1*e1/96)*Math.sin(6*mu)+(1097*e1*e1*e1*e1/512)*Math.sin(8*mu);
+    const N1=a/Math.sqrt(1-e2*Math.sin(p1)*Math.sin(p1)),T1=Math.tan(p1)*Math.tan(p1),C1=ep2*Math.cos(p1)*Math.cos(p1),R1=a*(1-e2)/Math.pow(1-e2*Math.sin(p1)*Math.sin(p1),1.5),D=x/(N1*k0);
+    const lat=p1-(N1*Math.tan(p1)/R1)*(D*D/2-(5+3*T1+10*C1-4*C1*C1-9*ep2)*Math.pow(D,4)/24+(61+90*T1+298*C1+45*T1*T1-252*ep2-3*C1*C1)*Math.pow(D,6)/720);
+    const lon=(D-(1+2*T1+C1)*D*D*D/6+(5-2*C1+28*T1-3*C1*C1+8*ep2+24*T1*T1)*Math.pow(D,5)/120)/Math.cos(p1);
+    return {lat:r2d(lat), lon:lo0+r2d(lon)};
+  }
+  function toLatLon(str){ try{ const d=decode(str); return UTMtoLL(d.e+d.acc/2,d.n+d.acc/2,d.z,d.b); }catch(_){ return null; } }
+  return {toMGRS:toMGRS, format:format, toLatLon:toLatLon};
+})();
+
+// คืน MGRS แบบจัดรูป "47P PR 12345 67890" หรือ '--' ถ้าไม่มีพิกัด
+function mgrsStr(lat,lon){
+  if(lat==null||lon==null||isNaN(lat)||isNaN(lon)||(lat===0&&lon===0)) return '--';
+  return MGRS.format(MGRS.toMGRS(lat,lon,5));
+}
+
+// ============================================================
 //  State
 // ============================================================
 const gs = {
@@ -408,12 +591,16 @@ const gs = {
   mode:   'view',
   selectedGun: 1,
   pendingSolution: null,
-  bootTime: null
+  bootTime: null,
+  plannedMove: {},                                      // gunId → {lat,lng,brgDeg,brgMil,dist}
+  firingPos: { primary:null, backup:[null,null,null] }, // ที่ตั้งยิง หลัก1/สำรอง3
+  firePosSlot: 0                                        // ช่องที่กำลัง "วาง/ย้าย" (0=หลัก,1..3=สำรอง)
 };
 
 // Map markers
 let fdcMarker  = null;
 let gunMarkers = {};
+let gunIconSig = {};   // cache ลายเซ็น icon ปืน (hdg|onTarget|primary) — วาด SVG ใหม่เฉพาะตอนเปลี่ยน
 let tgtMarkers = {};
 let clickMarker = null;
 
@@ -426,22 +613,40 @@ const map = L.map('map', {
   zoomControl: true
 });
 
-// Use OSM tiles — swap for offline tiles in production
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  attribution: 'OSM',
-  maxZoom: 18,
-  className: 'dark-tiles'
-}).addTo(map);
+// ── Base layers — สลับได้: ถนน / ดาวเทียม-ทางอากาศ / ภูมิประเทศ-เส้นชั้นความสูง ──
+// ผ่าน caching proxy ในเครื่อง (/tiles/...) — ออนไลน์เซฟลงแคชอัตโนมัติ, ออฟไลน์เสิร์ฟจากแคช
+const baseStreet = L.tileLayer('/tiles/street/{z}/{x}/{y}.png', {
+  attribution:'Esri', maxZoom:19, className:'dark-tiles'
+});
+const baseSat = L.tileLayer('/tiles/sat/{z}/{x}/{y}.png', {
+  attribution:'Esri World Imagery', maxZoom:19
+});
+const baseTopo = L.tileLayer('/tiles/topo/{z}/{x}/{y}.png', {
+  attribution:'Esri', maxZoom:19
+});
+baseStreet.addTo(map);   // ค่าตั้งต้น
+L.control.layers({
+  'ถนน (Street)':                baseStreet,
+  'ดาวเทียม / ทางอากาศ':         baseSat,
+  'ภูมิประเทศ / เส้นชั้นความสูง': baseTopo
+}, null, { position:'topright', collapsed:false }).addTo(map);
 
 // Darken tiles with CSS filter
 const style = document.createElement('style');
 style.innerHTML = `.dark-tiles { filter: invert(100%) hue-rotate(180deg) brightness(0.7) contrast(1.2); }`;
 document.head.appendChild(style);
 
-// Coordinate bar
+// Coordinate bar — อัปเดตเฉพาะข้อความพิกัด (ไม่รื้อ DOM, ไม่ลบ #mode-label/#mode-hint) + throttle ด้วย rAF
+let _cbRaf = 0, _cbLL = null;
 map.on('mousemove', e => {
-  document.getElementById('coord-bar').innerHTML =
-    `LAT ${e.latlng.lat.toFixed(5)}  LON ${e.latlng.lng.toFixed(5)} | Mode: <span id="mode-label">${gs.mode.toUpperCase()}</span>`;
+  _cbLL = e.latlng;
+  if (_cbRaf) return;
+  _cbRaf = requestAnimationFrame(() => {
+    _cbRaf = 0;
+    const el = document.getElementById('cb-pos');
+    if (el && _cbLL) el.textContent =
+      `MGRS ${mgrsStr(_cbLL.lat, _cbLL.lng)} | LAT ${_cbLL.lat.toFixed(5)} LON ${_cbLL.lng.toFixed(5)}`;
+  });
 });
 
 // Map click handler
@@ -450,6 +655,7 @@ map.on('click', e => {
   if (gs.mode === 'target') {
     document.getElementById('fm-lat').value = lat.toFixed(6);
     document.getElementById('fm-lon').value = lng.toFixed(6);
+    syncMgrsFromLatLon();
     // Preview marker
     if (clickMarker) map.removeLayer(clickMarker);
     clickMarker = L.marker([lat, lng], {
@@ -457,19 +663,235 @@ map.on('click', e => {
         html: '<div style="color:#ff3;font-size:20px;font-weight:bold">✕</div>',
         iconSize:[20,20], iconAnchor:[10,10]
       })
-    }).addTo(map).bindPopup(`Target: ${lat.toFixed(5)}, ${lng.toFixed(5)}`).openPopup();
+    }).addTo(map).bindPopup(`Target<br>MGRS ${mgrsStr(lat, lng)}<br>${lat.toFixed(5)}, ${lng.toFixed(5)}`).openPopup();
+  } else if (gs.mode === 'gun') {
+    planGunMove(lat, lng);
+  } else if (gs.mode === 'firepos') {
+    placeFiringPos(lat, lng);
   }
 });
 
 // ============================================================
 //  Mode control
 // ============================================================
+const MODE_HINTS = {
+  view:   '',
+  target: '— คลิกแผนที่เพื่อปักเป้าหมาย'
+};
 function setMode(m) {
   gs.mode = m;
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('mode-' + m).classList.add('active');
+  const btn = document.getElementById('mode-' + m);
+  if (btn) btn.classList.add('active');
   document.getElementById('mode-label').textContent = m.toUpperCase();
+  // แถบเลือกช่องที่ตั้งยิง (หลัก/สำรอง1-3) — โชว์เฉพาะโหมด firepos
+  const slots = document.getElementById('firepos-slots');
+  if (slots) slots.style.display = (m === 'firepos') ? 'inline-flex' : 'none';
+  if (m === 'firepos') renderSlotButtons();
+  // แถบเลือกปลายทาง (ที่ตั้งยิง) ของ MOVE GUN — โชว์เฉพาะโหมด gun
+  const dests = document.getElementById('movegun-dests');
+  if (dests) dests.style.display = (m === 'gun') ? 'inline-flex' : 'none';
+  if (m === 'gun') renderMoveDests();
+  const hint = document.getElementById('mode-hint');
+  if (hint) hint.textContent =
+    (m === 'gun')     ? `— เลือกปลายทาง (ที่ตั้งหลัก/สำรอง) หรือคลิกแผนที่ เพื่อคำนวณแผนย้าย Gun #${gs.selectedGun} (ไม่ย้ายจริง)` :
+    (m === 'firepos') ? '— เลือกช่อง (หลัก/สำรอง) แล้วคลิกแผนที่เพื่อวาง/ย้าย · หรือลากหมุดเพื่อย้าย' :
+    (MODE_HINTS[m] || '');
   map.getContainer().style.cursor = m === 'view' ? '' : 'crosshair';
+}
+
+// ============================================================
+//  Geo helpers (front-end)
+// ============================================================
+function haversineM(lat1, lon1, lat2, lon2) {
+  const R = 6371000, d2r = Math.PI/180;
+  const dphi = (lat2-lat1)*d2r, dlam = (lon2-lon1)*d2r;
+  const a = Math.sin(dphi/2)**2 + Math.cos(lat1*d2r)*Math.cos(lat2*d2r)*Math.sin(dlam/2)**2;
+  return R * 2 * Math.asin(Math.sqrt(a));
+}
+function bearingDeg(lat1, lon1, lat2, lon2) {
+  const d2r = Math.PI/180;
+  const y = Math.sin((lon2-lon1)*d2r) * Math.cos(lat2*d2r);
+  const x = Math.cos(lat1*d2r)*Math.sin(lat2*d2r) - Math.sin(lat1*d2r)*Math.cos(lat2*d2r)*Math.cos((lon2-lon1)*d2r);
+  return (Math.atan2(y, x) * 180/Math.PI + 360) % 360;
+}
+
+// ============================================================
+//  MOVE GUN — วางแผนทิศ/ระยะย้ายล่วงหน้า (ไม่ย้ายปืนจริง)
+// ============================================================
+let moveLayers = {};   // gunId → L.layerGroup (เส้น + หัวลูกศร)
+
+function planGunMove(lat, lng, destLabel) {
+  const id = gs.selectedGun;
+  const g  = gs.guns[id];
+  if (!g || !g.lat) {
+    addLog({t:now(), msg:`Gun ${id} ไม่มีพิกัด — เลือกปืนที่มีตำแหน่งก่อนวางแผนย้าย`, level:'error'});
+    return;
+  }
+  const brgDeg = bearingDeg(g.lat, g.lon, lat, lng);
+  const brgMil = Math.round(brgDeg * 6400/360) % 6400;
+  const dist   = haversineM(g.lat, g.lon, lat, lng);
+  gs.plannedMove[id] = { lat, lng, brgDeg, brgMil, dist, dest: destLabel || null };
+  drawPlannedMove(id);
+  renderGunCards();
+  if (id === gs.selectedGun) updateMoveCalcOption();
+  const to = destLabel ? ` → ${destLabel}` : '';
+  addLog({t:now(), msg:`แผนย้าย Gun ${id}${to}: ทิศ ${brgMil} mil (${brgDeg.toFixed(0)}°) / ${Math.round(dist)} m — ยังไม่ย้ายจริง`, level:'info'});
+}
+
+// วางแผนย้ายปืนที่เลือก ไป "ที่ตั้งยิง" ช่องที่ระบุ (0=หลัก, 1..3=สำรอง) แล้วคำนวณทิศ/ระยะ
+function planGunMoveTo(slot) {
+  const pos = (slot === 0) ? gs.firingPos.primary : gs.firingPos.backup[slot-1];
+  if (!pos) {
+    addLog({t:now(), msg:`ยังไม่ได้ตั้งที่ตั้งยิง${firePosLabel(slot)} — ไปโหมด "ที่ตั้งยิง" วางก่อน`, level:'error'});
+    return;
+  }
+  planGunMove(pos.lat, pos.lon, 'ที่ตั้ง' + firePosLabel(slot));
+}
+
+// เปิด/ปิดปุ่มปลายทางตาม "ที่ตั้งยิง" ที่ตั้งไว้จริง
+function renderMoveDests() {
+  const exists = [ !!gs.firingPos.primary, !!gs.firingPos.backup[0],
+                   !!gs.firingPos.backup[1], !!gs.firingPos.backup[2] ];
+  for (let i = 0; i < 4; i++) {
+    const b = document.getElementById('dest-' + i);
+    if (b) b.disabled = !exists[i];
+  }
+}
+
+// แสดง/ซ่อน ตัวเลือก "คำนวณเสมือนอยู่ปลายทาง" ตามว่าปืนที่เลือกมีแผนย้ายหรือไม่
+function updateMoveCalcOption() {
+  const grp = document.getElementById('from-planned-group');
+  if (!grp) return;
+  const pm = gs.plannedMove[gs.selectedGun];
+  grp.style.display = pm ? 'block' : 'none';
+  if (pm) {
+    const lbl = document.getElementById('from-planned-label');
+    if (lbl) lbl.textContent = `คำนวณเสมือนปืนอยู่ที่ ${pm.dest || 'ปลายทางที่วางแผน'}`;
+  }
+}
+
+// ถ้าติ๊ก "คำนวณเสมือนอยู่ปลายทาง" + ปืนที่เลือกมีแผนย้าย → คืนพิกัด override (ส่งไป backend)
+function plannedCalcCoords() {
+  const cb = document.getElementById('fm-from-planned');
+  const pm = gs.plannedMove[gs.selectedGun];
+  return (cb && cb.checked && pm) ? { gun_lat: pm.lat, gun_lon: pm.lng } : null;
+}
+
+function drawPlannedMove(id) {
+  const g = gs.guns[id], p = gs.plannedMove[id];
+  if (moveLayers[id]) { map.removeLayer(moveLayers[id]); delete moveLayers[id]; }
+  if (!g || !g.lat || !p) return;
+  const line = L.polyline([[g.lat, g.lon], [p.lat, p.lng]],
+                          { color:'#ffd700', weight:2, dashArray:'6 6', opacity:0.9 });
+  const head = L.marker([p.lat, p.lng], { icon: L.divIcon({
+    html:`<div style="transform:rotate(${p.brgDeg-90}deg);color:#ffd700;font-size:22px;line-height:1">➤</div>`,
+    iconSize:[22,22], iconAnchor:[11,11], className:''
+  })}).bindPopup(`<b>แผนย้าย Gun #${id}</b>${p.dest ? '<br>ปลายทาง: '+p.dest : ''}<br>ทิศ ${p.brgMil} mil (${p.brgDeg.toFixed(0)}°)<br>ระยะ ${Math.round(p.dist)} m<br><i>วางแผนล่วงหน้า — ปืนยังไม่ย้ายจริง</i>`);
+  moveLayers[id] = L.layerGroup([line, head]).addTo(map);
+}
+
+function clearPlans() {
+  Object.keys(moveLayers).forEach(id => map.removeLayer(moveLayers[id]));
+  moveLayers = {};
+  gs.plannedMove = {};
+  renderGunCards();
+  updateMoveCalcOption();
+  addLog({t:now(), msg:'ล้างแผนย้ายปืนทั้งหมด', level:'info'});
+}
+
+// ============================================================
+//  ที่ตั้งยิง — หลัก 1 + สำรอง 3 (วางบนแผนที่)
+// ============================================================
+let firePosMarkers = [];
+
+function firePosLabel(idx) { return idx === 0 ? 'หลัก' : 'สำรอง ' + idx; }
+
+// เลือกช่องที่ตั้งยิงที่จะ "วาง/ย้าย" (0=หลัก, 1..3=สำรอง)
+function armFirePosSlot(i) {
+  gs.firePosSlot = i;
+  if (gs.mode !== 'firepos') setMode('firepos');
+  renderSlotButtons();
+  const hint = document.getElementById('mode-hint');
+  if (hint) hint.textContent = `— กำลังวาง/ย้าย: ${firePosLabel(i)} → คลิกแผนที่ หรือลากหมุด`;
+}
+
+function renderSlotButtons() {
+  const isSet = [ !!gs.firingPos.primary, !!gs.firingPos.backup[0],
+                  !!gs.firingPos.backup[1], !!gs.firingPos.backup[2] ];
+  for (let i = 0; i < 4; i++) {
+    const b = document.getElementById('slot-' + i);
+    if (!b) continue;
+    b.classList.toggle('active', gs.firePosSlot === i);
+    b.classList.toggle('set', isSet[i]);
+  }
+}
+
+// อัปเดตพิกัดของช่องที่ตั้งยิงช่องเดียว (ใช้ตอนลากหมุดย้าย)
+function setFirePosCoord(slot, lat, lng) {
+  if (slot === 0) gs.firingPos.primary = { lat, lon: lng };
+  else            gs.firingPos.backup[slot-1] = { lat, lon: lng };
+  persistFiringPos();
+  addLog({t:now(), msg:`ย้ายที่ตั้งยิง${firePosLabel(slot)} → ${mgrsStr(lat, lng)}`, level:'info'});
+}
+
+// คลิกแผนที่ในโหมด firepos → วาง/ย้าย "ช่องที่เลือกอยู่" (ไม่วนอัตโนมัติ)
+function placeFiringPos(lat, lng) {
+  const idx = gs.firePosSlot;
+  if (idx === 0) gs.firingPos.primary = { lat, lon: lng };
+  else           gs.firingPos.backup[idx-1] = { lat, lon: lng };
+  renderFiringPos();
+  persistFiringPos();
+  renderSlotButtons();
+  renderMoveDests();
+  addLog({t:now(), msg:`ตั้งที่ตั้งยิง${firePosLabel(idx)} @ ${mgrsStr(lat, lng)}`, level:'info'});
+}
+
+function fpIcon(text, color) {
+  return L.divIcon({
+    html:`<div style="color:${color};font-size:13px;font-weight:bold;text-shadow:0 0 3px #000;white-space:nowrap">▲ ${text}</div>`,
+    iconSize:[64,16], iconAnchor:[8,16], className:''
+  });
+}
+
+function renderFiringPos() {
+  firePosMarkers.forEach(m => map.removeLayer(m));
+  firePosMarkers = [];
+  const fp = gs.firingPos;
+  // ลากหมุดเพื่อย้ายช่องนั้น ๆ ได้โดยตรง · คลิกหมุด (ในโหมด firepos) = เลือกช่องนั้น
+  const add = (slot, lat, lon, text, color, title) => {
+    const mk = L.marker([lat, lon], { icon: fpIcon(text, color), draggable: true });
+    mk.on('dragend', () => { const p = mk.getLatLng(); setFirePosCoord(slot, p.lat, p.lng); });
+    mk.on('click',   () => {
+      if (gs.mode === 'firepos')   armFirePosSlot(slot);
+      else if (gs.mode === 'gun')  planGunMoveTo(slot);   // คลิกหมุดที่ตั้งยิง = เลือกเป็นปลายทางย้ายปืน
+    });
+    mk.addTo(map).bindPopup(`${title}<br>MGRS ${mgrsStr(lat, lon)}<br><i>ลากหมุดเพื่อย้าย</i>`);
+    firePosMarkers.push(mk);
+  };
+  if (fp.primary) add(0, fp.primary.lat, fp.primary.lon, 'ฐ-หลัก', '#ffd700', 'ที่ตั้งยิงหลัก');
+  (fp.backup || []).forEach((b, i) => {
+    if (b) add(i+1, b.lat, b.lon, 'ฐ-สำรอง'+(i+1), '#7fff00', 'ที่ตั้งยิงสำรอง '+(i+1));
+  });
+}
+
+async function persistFiringPos() {
+  try {
+    await fetch('/api/firing_pos', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ primary: gs.firingPos.primary, backup: gs.firingPos.backup })
+    });
+  } catch (e) { addLog({t:now(), msg:'บันทึกที่ตั้งยิงไม่สำเร็จ', level:'error'}); }
+}
+
+function applyFiringPos(fp) {
+  if (!fp) return;
+  gs.firingPos = { primary: fp.primary || null,
+                   backup: (fp.backup || [null,null,null]).slice(0,3) };
+  while (gs.firingPos.backup.length < 3) gs.firingPos.backup.push(null);
+  renderFiringPos();
+  renderSlotButtons();
+  renderMoveDests();
 }
 
 // ============================================================
@@ -483,6 +905,10 @@ function connectSSE() {
     if (data.boot_time) gs.bootTime = data.boot_time;
     updateFdc(data.fdc);
     Object.values(data.guns).forEach(g => updateGun(g));
+    // เลือกปืนหลักเป็นค่าตั้งต้นใน Fire Mission
+    const primary = Object.values(data.guns).find(g => g.role === 'primary');
+    if (primary) selectGun(primary.id);
+    if (data.firing_pos) applyFiringPos(data.firing_pos);
     Object.values(data.targets).forEach(t => updateTarget(t));
     data.log.forEach(addLog);
     updateRadio(data.radio);
@@ -497,6 +923,7 @@ function connectSSE() {
   es.addEventListener('log', e => addLog(JSON.parse(e.data)));
   es.addEventListener('target_update', e => updateTarget(JSON.parse(e.data)));
   es.addEventListener('target_remove', e => removeTarget(JSON.parse(e.data).id));
+  es.addEventListener('firing_pos', e => applyFiringPos(JSON.parse(e.data)));
 
   es.onerror = () => {
     document.getElementById('radio-pill').textContent = 'SERVER: OFFLINE';
@@ -536,9 +963,13 @@ function updateFdc(fdc) {
   gs.fdc = fdc;
   document.getElementById('fdc-lat').textContent = fdc.lat ? fdc.lat.toFixed(5) : '--';
   document.getElementById('fdc-lon').textContent = fdc.lon ? fdc.lon.toFixed(5) : '--';
-  document.getElementById('fdc-alt').textContent = fdc.alt ? fdc.alt.toFixed(0) : '--';
+  document.getElementById('fdc-alt').textContent = (fdc.alt != null) ? fdc.alt.toFixed(0) : '--';
   document.getElementById('fdc-fix').textContent = fdc.fix || '--';
   document.getElementById('fdc-sats').textContent = fdc.sats || '--';
+  document.getElementById('fdc-mgrs').textContent = (fdc.valid && fdc.lat) ? mgrsStr(fdc.lat, fdc.lon) : '--';
+  // prefill ความสูงปืน/ศอย. จาก GPS ศอย. (เฉพาะถ้าผู้ใช้ยังไม่ได้กรอกเอง)
+  const gunAltEl = document.getElementById('fm-gun-alt');
+  if (gunAltEl && !gunAltEl.value && fdc.valid && fdc.alt != null) gunAltEl.value = Math.round(fdc.alt);
 
   const gpsPill = document.getElementById('gps-pill');
   if (fdc.valid) {
@@ -559,10 +990,10 @@ function updateFdc(fdc) {
   }
 }
 
-function makeCannonSvg(id, hdgDeg, onTarget) {
+function makeCannonSvg(id, hdgDeg, onTarget, isPrimary) {
   // hdgDeg = heading องศา (0=N, 90=E, 180=S, 270=W)
-  // วาด cannon หมุนตาม heading
-  const color = onTarget ? '#00ff88' : '#39ff14';
+  // วาด cannon หมุนตาม heading; ปืนหลัก = ทอง, อยู่บนเป้า = เขียวสว่าง
+  const color = onTarget ? '#00ff88' : (isPrimary ? '#ffd700' : '#39ff14');
   const rot = hdgDeg || 0;
   return `<div style="position:relative;width:40px;height:40px;">
     <svg width="40" height="40" viewBox="-20 -20 40 40" xmlns="http://www.w3.org/2000/svg"
@@ -584,9 +1015,9 @@ function makeCannonSvg(id, hdgDeg, onTarget) {
         <!-- แกน -->
         <line x1="-11" y1="4" x2="11" y2="4" stroke="${color}" stroke-width="1.5"/>
       </g>
-      <!-- Gun ID label -->
+      <!-- Gun ID label (★ = ปืนหลัก) -->
       <text x="0" y="14" text-anchor="middle"
-            style="font-family:monospace;font-size:7px;font-weight:bold;fill:${color}">G${id}</text>
+            style="font-family:monospace;font-size:7px;font-weight:bold;fill:${color}">${isPrimary ? '★' : ''}G${id}</text>
     </svg>
     ${onTarget ? '<div style="position:absolute;top:-6px;right:-6px;width:10px;height:10px;background:#00ff88;border-radius:50%;border:1px solid #0a1a0a;animation:pulse 1s infinite"></div>' : ''}
   </div>`;
@@ -611,24 +1042,23 @@ function updateGun(gun) {
     }
   }
 
-  // Update map marker with rotating cannon
+  // Update map marker with rotating cannon (วาด SVG icon ใหม่เฉพาะตอน หัน/บทบาท/บนเป้า เปลี่ยน)
   if (gun.lat && gun.lon && gun.lat !== 0) {
-    const svgHtml = makeCannonSvg(id, hdgDeg, onTarget);
-    const icon = L.divIcon({
-      html: svgHtml,
-      iconSize: [40, 40],
-      iconAnchor: [20, 20],
-      className: ''
-    });
+    const isPrimary = (gun.role === 'primary');
+    const sig = `${hdgDeg}|${onTarget}|${isPrimary}`;
+    const mkIcon = () => L.divIcon({ html: makeCannonSvg(id, hdgDeg, onTarget, isPrimary),
+                                     iconSize:[40,40], iconAnchor:[20,20], className:'' });
     if (!gunMarkers[id]) {
-      gunMarkers[id] = L.marker([gun.lat, gun.lon], { icon }).addTo(map);
+      gunMarkers[id] = L.marker([gun.lat, gun.lon], { icon: mkIcon() }).addTo(map);
+      gunIconSig[id] = sig;
     } else {
       gunMarkers[id].setLatLng([gun.lat, gun.lon]);
-      gunMarkers[id].setIcon(icon);
+      if (sig !== gunIconSig[id]) { gunMarkers[id].setIcon(mkIcon()); gunIconSig[id] = sig; }
     }
     const hdgStr = hdgDeg != null ? `${hdgDeg.toFixed(0)}°` : '--';
     gunMarkers[id].bindPopup(
-      `<b>Gun #${id}</b><br>` +
+      `<b>Gun #${id}</b> <span style="color:${isPrimary?'#ffd700':'#6a9a6a'}">[${isPrimary?'หลัก':'สำรอง'}]</span><br>` +
+      `MGRS: ${mgrsStr(gun.lat, gun.lon)}<br>` +
       `HDG: ${hdgStr}<br>` +
       `AZ Target: ${gun.az} mil<br>` +
       `EL: ${gun.el} mil<br>` +
@@ -638,35 +1068,70 @@ function updateGun(gun) {
     );
   }
 
+  if (gs.plannedMove[id]) drawPlannedMove(id);
   renderGunCards();
   updateGunPill();
 }
 
 function renderGunCards() {
   const wrap = document.getElementById('gun-cards');
-  wrap.innerHTML = '';
+  const parts = [];
   for (let i = 1; i <= 4; i++) {
     const g = gs.guns[i] || {};
     const alive = g.alive && g.last_seen && (Date.now()/1000 - g.last_seen) < 30;
     const sel = gs.selectedGun == i;
-    wrap.innerHTML += `
+    const isPrimary = (g.role === 'primary');
+    const roleBadge = `<span class="role-badge ${isPrimary?'role-primary':'role-backup'}">${isPrimary?'★ หลัก':'สำรอง'}</span>`;
+    const pm = gs.plannedMove[i];
+    const planLine = pm ? `<div style="font-size:9px;color:#ffd700;margin-bottom:3px">➤ แผนย้าย${pm.dest?' → '+pm.dest:''} ${pm.brgMil} mil / ${Math.round(pm.dist)} m</div>` : '';
+    const batVal = (g.bat != null) ? g.bat : '--';
+    const batLow = (alive && g.bat != null && g.bat < 20);   // 0% = วิกฤต ต้องกระพริบด้วย
+    parts.push(`
       <div class="gun-card ${sel?'selected':''} ${alive?'':'dead'}" onclick="selectGun(${i})">
         <div class="gun-title">
-          <span class="gun-name">GUN #${i}</span>
+          <span class="gun-name">GUN #${i}${roleBadge}</span>
           <span class="gun-alive ${alive?'pill-green':'pill-red'}">${alive?'● ALIVE':'○ OFFLINE'}</span>
         </div>
+        <div style="font-size:10px;color:#7fff00;margin-bottom:3px">⊕ ${(alive && g.lat) ? mgrsStr(g.lat, g.lon) : '--'}</div>
+        ${planLine}
         <div class="gun-grid">
-          <span>BAT</span>   <b class="${(alive && g.bat>0 && g.bat<20)?'bat-low':''}">${g.bat||'--'}%</b>
+          <span>BAT</span>   <b class="${batLow?'bat-low':''}">${batVal}%</b>
           <span>RSSI</span>  <b>${g.rssi||'--'} dBm</b>
-          <span>AZ</span>    <b>${g.az||'--'} mil</b>
+          <span>AZ</span>    <b>${(g.az != null) ? g.az : '--'} mil</b>
           <span>HDG</span>   <b>${g.hdg!=null ? Math.round(g.hdg*360/6400)+'°' : '--'}</b>
         </div>
         <div class="gun-actions">
           <button class="btn-sm" onclick="event.stopPropagation();pingGun(${i})">PING</button>
           <button class="btn-sm" onclick="event.stopPropagation();goToGun(${i})">MAP</button>
+          <button class="btn-sm role-set" onclick="event.stopPropagation();setGunRole(${i})" ${isPrimary?'disabled':''}>ตั้งหลัก</button>
         </div>
-      </div>`;
+      </div>`);
   }
+  wrap.innerHTML = parts.join('');
+  updateGunDropdown();
+}
+
+// อัปเดตป้ายตัวเลือกปืนใน Fire Mission ให้บอกหลัก/สำรอง
+function updateGunDropdown() {
+  const sel = document.getElementById('fm-gun');
+  if (!sel) return;
+  for (let i = 1; i <= 4; i++) {
+    const opt = sel.querySelector(`option[value="${i}"]`);
+    if (opt) {
+      const r = (gs.guns[i] || {}).role;
+      opt.textContent = `Gun #${i}` + (r === 'primary' ? ' (หลัก)' : ' (สำรอง)');
+    }
+  }
+}
+
+// ตั้งปืนเป็น "ที่ตั้งหลัก" (กระบอกอื่นกลายเป็นสำรองอัตโนมัติฝั่ง backend)
+async function setGunRole(id) {
+  try {
+    await fetch(`/api/gun/${id}/role`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ role:'primary' })
+    });
+  } catch (e) { addLog({t:now(), msg:'ตั้งบทบาทปืนไม่สำเร็จ', level:'error'}); }
 }
 
 function updateGunPill() {
@@ -683,6 +1148,11 @@ function updateGunPill() {
 function selectGun(id) {
   gs.selectedGun = id;
   document.getElementById('fm-gun').value = id;
+  if (gs.mode === 'gun') {
+    const hint = document.getElementById('mode-hint');
+    if (hint) hint.textContent = `— เลือกปลายทาง (ที่ตั้งหลัก/สำรอง) หรือคลิกแผนที่ เพื่อคำนวณแผนย้าย Gun #${id} (ไม่ย้ายจริง)`;
+  }
+  updateMoveCalcOption();
   renderGunCards();
 }
 
@@ -700,13 +1170,45 @@ function updateTarget(t) {
   } else {
     tgtMarkers[t.id].setLatLng([t.lat, t.lon]);
   }
-  tgtMarkers[t.id].bindPopup(`${t.name}<br>${t.lat.toFixed(5)}, ${t.lon.toFixed(5)}`);
+  tgtMarkers[t.id].bindPopup(`${t.name}<br>MGRS ${mgrsStr(t.lat, t.lon)}<br>${t.lat.toFixed(5)}, ${t.lon.toFixed(5)}`);
 }
 
 function removeTarget(id) {
   if (tgtMarkers[id]) { map.removeLayer(tgtMarkers[id]); delete tgtMarkers[id]; }
   delete gs.targets[id];
 }
+
+// ============================================================
+//  MGRS target input
+// ============================================================
+// พิมพ์ MGRS แล้วเติม lat/lon ให้อัตโนมัติ + ปักหมุดพรีวิว (ฟอร์ม §1 "ระบุพิกัดแบบ MGRS")
+function applyMgrsInput() {
+  const v = document.getElementById('fm-mgrs').value.trim();
+  if (!v) return;
+  const ll = MGRS.toLatLon(v);
+  if (!ll) { addLog({t:now(), msg:'MGRS ไม่ถูกต้อง: ' + v, level:'error'}); return; }
+  document.getElementById('fm-lat').value = ll.lat.toFixed(6);
+  document.getElementById('fm-lon').value = ll.lon.toFixed(6);
+  document.getElementById('fm-mgrs').value = mgrsStr(ll.lat, ll.lon);   // จัดรูปให้สวย
+  if (gs.mode !== 'target') setMode('target');
+  if (clickMarker) map.removeLayer(clickMarker);
+  clickMarker = L.marker([ll.lat, ll.lon], {
+    icon: L.divIcon({ html:'<div style="color:#ff3;font-size:20px;font-weight:bold">✕</div>', iconSize:[20,20], iconAnchor:[10,10] })
+  }).addTo(map).bindPopup(`Target<br>MGRS ${mgrsStr(ll.lat, ll.lon)}<br>${ll.lat.toFixed(5)}, ${ll.lon.toFixed(5)}`).openPopup();
+  map.setView([ll.lat, ll.lon], Math.max(map.getZoom(), 13));
+}
+
+// พิมพ์/แก้ lat-lon แล้วอัปเดตช่อง MGRS ให้ตรงกัน
+function syncMgrsFromLatLon() {
+  const lat = parseFloat(document.getElementById('fm-lat').value);
+  const lon = parseFloat(document.getElementById('fm-lon').value);
+  if (isNaN(lat) || isNaN(lon)) return;
+  const s = MGRS.toMGRS(lat, lon, 5);
+  if (s) document.getElementById('fm-mgrs').value = MGRS.format(s);
+}
+
+// อ่านช่องความสูง → ตัวเลข หรือ null ถ้าเว้นว่าง (optional)
+function altVal(id) { const v = parseFloat(document.getElementById(id).value); return isNaN(v) ? null : v; }
 
 // ============================================================
 //  Fire Mission
@@ -727,7 +1229,10 @@ async function calcFire() {
     body: JSON.stringify({lat, lon, name})
   });
 
-  const body = { tgt_lat:lat, tgt_lon:lon, gun, charge: chg ? parseInt(chg) : null };
+  const pc = plannedCalcCoords();   // คำนวณเสมือนอยู่ปลายทาง (ถ้ามีแผน + ติ๊ก)
+  const body = { tgt_lat:lat, tgt_lon:lon, gun, charge: chg ? parseInt(chg) : null,
+                 tgt_alt: altVal('fm-tgt-alt'), gun_alt: altVal('fm-gun-alt'),
+                 ...(pc || {}) };
   const r = await fetch('/api/fire_mission', {
     method:'POST',
     headers:{'Content-Type':'application/json'},
@@ -743,15 +1248,27 @@ async function calcFire() {
 
 function showSolution(s) {
   document.getElementById('solution').style.display = 'block';
+  const baseEl = document.getElementById('sol-base');
+  if (baseEl) {
+    const names = { planned:'ที่ตั้งปลายทาง (แผนย้าย)', current:'ปืนปัจจุบัน', fdc:'ศอย. (สำรอง)' };
+    baseEl.textContent = names[s.base] || '—';
+    baseEl.style.color = (s.base === 'planned') ? '#ffd700' : '#7fff00';
+  }
+  const tl = parseFloat(document.getElementById('fm-lat').value);
+  const to = parseFloat(document.getElementById('fm-lon').value);
+  document.getElementById('sol-mgrs').textContent = (!isNaN(tl) && !isNaN(to)) ? mgrsStr(tl, to) : '--';
   document.getElementById('sol-az').textContent    = (s.az_mils_corrected || s.az_mils) + ' mil';
   document.getElementById('sol-el').textContent    = s.el_mils + ' mil';
+  document.getElementById('sol-site').textContent  = (s.site_mils != null ? s.site_mils : 0) + ' mil';
   document.getElementById('sol-range').textContent = s.range_m + ' m';
   document.getElementById('sol-chg').textContent   = s.charge;
   document.getElementById('sol-drift').textContent = s.drift_mils + ' mil';
   document.getElementById('btn-fire').disabled = false;
+  document.getElementById('btn-cel').disabled  = false;
 }
 
-async function sendFire() {
+async function sendFire(order) {
+  order = (order === 'STANDBY') ? 'STANDBY' : 'FIRE';   // STANDBY = เล็ง/รอยิง, FIRE = ยิงทันที
   const lat  = parseFloat(document.getElementById('fm-lat').value);
   const lon  = parseFloat(document.getElementById('fm-lon').value);
   const gun  = document.getElementById('fm-gun').value;
@@ -759,22 +1276,35 @@ async function sendFire() {
 
   if (!lat || !lon) return;
 
+  const pc = plannedCalcCoords();   // ส่งค่ายิงให้ปืน "เสมือนอยู่ปลายทาง" ได้เช่นกัน
   const r = await fetch('/api/fire_mission', {
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ tgt_lat:lat, tgt_lon:lon, gun, charge: chg ? parseInt(chg) : null })
+    body: JSON.stringify({ tgt_lat:lat, tgt_lon:lon, gun, charge: chg ? parseInt(chg) : null,
+                           tgt_alt: altVal('fm-tgt-alt'), gun_alt: altVal('fm-gun-alt'),
+                           send:true, order, ...(pc || {}) })
   });
   const data = await r.json();
-  if (data.error) { addLog({t:now(),msg:'Fire error: '+data.error,level:'error'}); return; }
+  if (data.error) { addLog({t:now(),msg:(order==='FIRE'?'Fire':'STANDBY')+' error: '+data.error,level:'error'}); return; }
 
-  addLog({t:now(), msg:`FIRE → Gun ${gun} AZ=${data.az_mils_corrected||data.az_mils} EL=${data.el_mils} CHG=${data.charge} Range=${data.range_m}m`, level:'fire'});
-  document.getElementById('btn-fire').disabled = true;
+  const verb = (order === 'FIRE') ? 'FIRE' : 'STANDBY(รอยิง)';
+  addLog({t:now(), msg:`${verb} → Gun ${gun} AZ=${data.az_mils_corrected||data.az_mils} EL=${data.el_mils} CHG=${data.charge} Range=${data.range_m}m`, level:'fire'});
   updateLastFire(data);
+
+  if (order === 'FIRE') {
+    // ยิงแล้ว — ปิดทั้งสองปุ่ม (กด CALCULATE ใหม่เพื่อเริ่มภารกิจถัดไป)
+    document.getElementById('btn-fire').disabled = true;
+    document.getElementById('btn-cel').disabled  = true;
+  }
+  // STANDBY: คงปุ่มไว้ทั้งคู่ เพื่อกด FIRE ต่อเมื่อพร้อม
 }
 
 function updateLastFire(s) {
+  const ord = (s.order === 'STANDBY')
+    ? '<span style="color:#ffd700">STANDBY/รอยิง</span>'
+    : '<span style="color:#ff7777">FIRE</span>';
   document.getElementById('last-fire').innerHTML =
-    `Gun ${s.gun_id} | AZ <b style="color:#ffd700">${s.az_mils_corrected||s.az_mils}</b> mil | ` +
+    `${ord} | Gun ${s.gun_id} | AZ <b style="color:#ffd700">${s.az_mils_corrected||s.az_mils}</b> mil | ` +
     `EL <b style="color:#ffd700">${s.el_mils}</b> mil | CHG ${s.charge} | ${s.range_m}m`;
 }
 
@@ -819,6 +1349,9 @@ setInterval(() => {
       'UP ' + fmtUptime(Date.now()/1000 - gs.bootTime);
   }
 }, 1000);
+
+// รีเฟรชการ์ดปืนเป็นระยะ ให้สถานะ ALIVE/OFFLINE อัปเดตแม้ไม่มี telemetry เข้ามาใหม่
+setInterval(() => { renderGunCards(); updateGunPill(); }, 5000);
 
 // ============================================================
 //  Init

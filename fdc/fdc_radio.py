@@ -52,6 +52,7 @@ class FdcRadio:
     BAUD = 115200
     RECONNECT_DELAY = 1.0     # was 3.0 — เร่งให้เสียบแล้วต่อเร็ว
     MAX_QUEUE = 200
+    BROADCAST_GUN = 255       # ping ทุกกระบอกพร้อมกัน (broadcast) — กระบอกไม่ตอบ pong
 
     def __init__(self, port: str = None, psk: str = None):
         self.port    = port               # current/forced port
@@ -462,19 +463,33 @@ class FdcRadio:
                 self._drop_connection(str(e))
                 return False
 
-    def send_fire_cmd(self, gun: int, az_mils: int, el_mils: int, charge: int) -> bool:
-        """Send a fire command to a specific gun via LoRa."""
+    def send_fire_cmd(self, gun: int, az_mils: int, el_mils: int, charge: int,
+                      order: str = "FIRE") -> bool:
+        """Send a fire command to a specific gun via LoRa.
+
+        order = "FIRE"    → ยิงทันที
+                "STANDBY" → ส่งค่าให้ปืนเล็ง/ตั้งลำกล้อง รอสั่งยิง (ยังไม่ยิง)
+        firmware ฝั่งปืนเป็นผู้ตีความ order; default = "FIRE" → เข้ากันได้กับของเดิม
+        """
         return self._send({
             "type":   "FIRE_CMD",
             "gun":    gun,
             "az":     az_mils,
             "el":     el_mils,
-            "charge": charge
+            "charge": charge,
+            "order":  order
         })
 
     def ping_gun(self, gun: int) -> bool:
         """Ping a gun to check connectivity."""
         return self._send({"type": "PING_GUN", "gun": gun})
+
+    def ping_broadcast(self) -> bool:
+        """Broadcast heartbeat ping (gun=255) — ทุกกระบอกได้ยินแล้ว stamp LINK
+        แต่ไม่มีกระบอกไหนตอบ pong (เฟิร์มแวร์ตอบเฉพาะเมื่อ addr==gunId).
+        ใช้ airtime แค่ 1 แพ็กเก็ตครอบทุกกระบอก — เหมาะกับ SF12 ที่ airtime สูง
+        (ping ทีละกระบอก + รอ pong จะกินอากาศเกินงบเมื่อมีหลายกระบอก)."""
+        return self._send({"type": "PING_GUN", "gun": self.BROADCAST_GUN})
 
     def request_status(self) -> bool:
         """Request latest status for all guns."""
