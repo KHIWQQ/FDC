@@ -31,6 +31,7 @@ import hub
 import auth
 import command
 import mqtt_ingest
+import demo
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -51,6 +52,7 @@ async def _startup():
 
 @app.on_event("shutdown")
 async def _shutdown():
+    await demo.stop()
     if _ingest_task:
         _ingest_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -134,6 +136,14 @@ async def node_guns(unit: str, node: str, user: dict = Depends(auth.current_user
     if not auth.can_view(user, unit, node):
         raise HTTPException(403, "ไม่มีสิทธิ์ดูหน่วยนี้")
     return await db.latest_guns(unit, node)
+
+
+@app.get("/api/targets")
+async def targets(unit: str | None = None, node: str | None = None,
+                  user: dict = Depends(auth.current_user)):
+    """เป้าที่ ศอย. ปักหมุดไว้ (ยังไม่ยิง) — กรองตามขอบเขต RBAC"""
+    rows = await db.list_targets()
+    return [r for r in rows if auth.can_view(user, r["unit"], r["node"])]
 
 
 def _scoped_filter(user: dict, unit: str | None, node: str | None):
@@ -328,6 +338,45 @@ async def set_disabled(username: str, request: Request, disabled: bool = True,
 
 
 # ------------------------------------------------------------
+#  โหมดสาธิต (ปุ่ม DEMO) — ป้อน mock telemetry ฝั่งศูนย์ (admin เท่านั้น)
+#  เขียนผ่าน ingest path เดียวกับของจริง → เห็นหมุด/ภารกิจยิง/ฟีดสด realtime
+# ------------------------------------------------------------
+
+@app.get("/api/demo/status")
+async def demo_status(user: dict = Depends(auth.require_admin)):
+    return {"enabled": config.DEMO_ENABLED, **demo.status()}
+
+
+@app.post("/api/demo/start")
+async def demo_start(request: Request, user: dict = Depends(auth.require_admin)):
+    if not config.DEMO_ENABLED:
+        raise HTTPException(403, "โหมดสาธิตถูกปิด (ตั้ง DEMO_ENABLED=true เพื่อเปิด)")
+    started = await demo.start()
+    await db.insert_audit(user["username"], "demo:start", "ok" if started else "noop",
+                          ip=_client_ip(request))
+    return {"started": started, **demo.status()}
+
+
+@app.post("/api/demo/stop")
+async def demo_stop(request: Request, user: dict = Depends(auth.require_admin)):
+    stopped = await demo.stop()
+    await db.insert_audit(user["username"], "demo:stop", "ok" if stopped else "noop",
+                          ip=_client_ip(request))
+    return {"stopped": stopped, **demo.status()}
+
+
+@app.post("/api/demo/clear")
+async def demo_clear(request: Request, user: dict = Depends(auth.require_admin)):
+    if not config.DEMO_ENABLED:
+        raise HTTPException(403, "โหมดสาธิตถูกปิด")
+    await demo.stop()
+    counts = await db.clear_demo_data(demo.DEMO_PREFIX)
+    await db.insert_audit(user["username"], "demo:clear", "ok",
+                          ip=_client_ip(request), detail=counts)
+    return {"cleared": counts}
+
+
+# ------------------------------------------------------------
 #  WebSocket realtime feed (กรองตามขอบเขตผู้ใช้)
 # ------------------------------------------------------------
 
@@ -342,8 +391,12 @@ async def ws(websocket: WebSocket):
     q = await hub.broadcaster.subscribe()
     try:
         # snapshot เริ่มต้น — กรองเฉพาะหน่วยที่ผู้ใช้มีสิทธิ์เห็น
+        # ใช้ default=str เหมือน live message: list_nodes() มี datetime (last_seen/gps_time)
+        # ที่ json มาตรฐานของ send_json() serialize ไม่ได้ (จะทำให้ snapshot ล้มเงียบ)
         snap = [r for r in await db.list_nodes() if auth.can_view(user, r["unit"], r["node"])]
-        await websocket.send_json({"kind": "snapshot", "nodes": snap})
+        tsnap = [t for t in await db.list_targets() if auth.can_view(user, t["unit"], t["node"])]
+        await websocket.send_text(json.dumps(
+            {"kind": "snapshot", "nodes": snap, "targets": tsnap}, default=str))
         while True:
             msg = await q.get()                # dict ดิบจาก broadcaster
             if not auth.can_view(user, msg.get("unit"), msg.get("node")):
@@ -352,7 +405,7 @@ async def ws(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        logger.debug(f"ws closed: {e}")
+        logger.warning(f"ws closed on error: {e!r}")
     finally:
         await hub.broadcaster.unsubscribe(q)
 

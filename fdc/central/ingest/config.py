@@ -85,6 +85,12 @@ if AUTH_ENABLED and not JWT_SECRET:
         "ตั้งค่า JWT_SECRET (สุ่มยาว) ก่อน หรือ AUTH_ENABLED=false สำหรับ dev")
 
 
+# ---- โหมดสาธิต (ปุ่ม DEMO) ----
+# ป้อน mock telemetry ฝั่งศูนย์เพื่อโชว์ dashboard โดยไม่ต้องมี ศอย./ฮาร์ดแวร์จริง
+# ปิดในระบบจริง: DEMO_ENABLED=false
+DEMO_ENABLED = _bool("DEMO_ENABLED", True)
+
+
 # ---- ไฟล์ dashboard (STEP D2) ----
 def _web_dir() -> str | None:
     """หาโฟลเดอร์ web/ ให้ทำงานได้ทั้งใน container (/app/web) และ dev (../web)."""

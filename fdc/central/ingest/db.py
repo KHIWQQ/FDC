@@ -107,6 +107,61 @@ async def insert_event(unit, node, ts, d: dict):
         )
 
 
+async def upsert_target(unit, node, tgt_id, ts, d: dict):
+    """ปัก/แก้/ลบเป้าที่ ศอย. แชร์ขึ้นมา. active=false → ลบทิ้ง (tombstone)."""
+    tgt_id = str(tgt_id)
+    if not d.get("active", True):
+        async with _pool.acquire() as c:
+            await c.execute(
+                "DELETE FROM targets WHERE unit=$1 AND node=$2 AND tgt_id=$3",
+                unit, node, tgt_id)
+        return
+    lat, lon = d.get("lat"), d.get("lon")
+    geom = f"SRID=4326;POINT({lon} {lat})" if _has_fix(lat, lon) else None
+    async with _pool.acquire() as c:
+        await c.execute(
+            """INSERT INTO targets
+                 (unit, node, tgt_id, name, note, lat, lon, geom, active, updated)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,TRUE,to_timestamp($9))
+               ON CONFLICT (unit, node, tgt_id) DO UPDATE SET
+                 name=EXCLUDED.name, note=EXCLUDED.note, lat=EXCLUDED.lat,
+                 lon=EXCLUDED.lon, geom=EXCLUDED.geom, active=TRUE,
+                 updated=EXCLUDED.updated""",
+            unit, node, tgt_id, d.get("name"), d.get("note"),
+            lat, lon, geom, ts)
+
+
+async def list_targets(unit=None, node=None) -> list[dict]:
+    """เป้าที่ยัง active (สำหรับ snapshot/REST ของ dashboard)"""
+    q = ("""SELECT unit, node, tgt_id, name, note, lat, lon,
+                   extract(epoch FROM updated) AS updated
+            FROM targets WHERE active=TRUE""")
+    args, where = [], []
+    if unit:
+        args.append(unit); where.append(f"unit=${len(args)}")
+    if node:
+        args.append(node); where.append(f"node=${len(args)}")
+    if where:
+        q += " AND " + " AND ".join(where)
+    q += " ORDER BY unit, node, tgt_id"
+    async with _pool.acquire() as c:
+        rows = await c.fetch(q, *args)
+        return [dict(r) for r in rows]
+
+
+async def clear_demo_data(prefix: str) -> dict:
+    """ลบ telemetry/หน่วยที่ unit ขึ้นต้นด้วย prefix (ใช้ล้างข้อมูลสาธิตเท่านั้น).
+    คืน dict จำนวนแถวที่ลบต่อตาราง. ตารางทั้งหมดมีคอลัมน์ unit จึงลบครบทุกชนิด."""
+    like = prefix + "%"
+    counts = {}
+    async with _pool.acquire() as c:
+        for tbl in ("fire_missions", "gun_status", "fdc_gps",
+                    "events", "targets", "cmd_seq", "nodes"):
+            tag = await c.execute(f"DELETE FROM {tbl} WHERE unit LIKE $1", like)
+            counts[tbl] = int(tag.rsplit(" ", 1)[-1]) if tag else 0
+    return counts
+
+
 # ------------------------------------------------------------
 #  ลำดับคำสั่ง downlink (anti-replay) — ออก seq ใหม่แบบ atomic
 # ------------------------------------------------------------

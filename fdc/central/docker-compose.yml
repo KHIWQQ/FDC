@@ -63,6 +63,8 @@ services:
       JWT_TTL_MIN:       ${JWT_TTL_MIN:-720}
       ADMIN_USER:        ${ADMIN_USER:-admin}
       ADMIN_PASSWORD:    ${ADMIN_PASSWORD:-}
+      # โหมดสาธิต (ปุ่ม DEMO) — ปิดในระบบจริงด้วย DEMO_ENABLED=false
+      DEMO_ENABLED:      ${DEMO_ENABLED:-true}
     volumes:
       - ./certs:/certs:ro
       - ./web:/app/web:ro       # dashboard (D2) — เปลี่ยนหน้าเว็บได้โดยไม่ rebuild

@@ -25,6 +25,24 @@ CREATE TABLE IF NOT EXISTS nodes (
 );
 
 -- ------------------------------------------------------------
+--  เป้าหมายที่ ศอย. ปักหมุดไว้ (ยังไม่ยิง) — แชร์ขึ้น COP ระดับประเทศ
+--  สถานะปัจจุบัน 1 แถวต่อเป้า (ไม่ใช่ time-series) — ลบเมื่อ active=false
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS targets (
+    unit     TEXT NOT NULL,
+    node     TEXT NOT NULL,
+    tgt_id   TEXT NOT NULL,
+    name     TEXT,
+    note     TEXT,
+    lat      DOUBLE PRECISION,
+    lon      DOUBLE PRECISION,
+    geom     geometry(Point, 4326),
+    active   BOOLEAN     NOT NULL DEFAULT TRUE,
+    updated  TIMESTAMPTZ,
+    PRIMARY KEY (unit, node, tgt_id)
+);
+
+-- ------------------------------------------------------------
 --  GPS ของ ศอย. (telemetry time-series)
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS fdc_gps (

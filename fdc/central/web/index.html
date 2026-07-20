@@ -67,9 +67,10 @@
     font-size: 16px; text-align: center; line-height: 1;
     text-shadow: 0 0 3px #000, 0 0 3px #000;
   }
-  .pin-node { color: #39ff14; }
-  .pin-gun  { color: #7fdfff; }
-  .pin-tgt  { color: #ff3c3c; }
+  .pin-node  { color: #39ff14; }
+  .pin-gun   { color: #7fdfff; }
+  .pin-tgt   { color: #ff3c3c; }
+  .pin-watch { color: #ffb000; }   /* เป้าที่ปักไว้ (ยังไม่ยิง) */
 
   /* ── Feed / timeline ── */
   #feed { height: 190px; border-top: 1px solid #1a3a1a; background: #0b150b; display: flex; flex-direction: column; }
@@ -100,6 +101,10 @@
   }
   button.act:hover { background: #1a2e1a; }
   button.act:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.act.on { color: #ffd700; border-color: #ffd700; background: #2a2410; }
+  #demo-wrap { display: flex; gap: 4px; align-items: center; }
+  .blink { animation: blink 1s steps(2, start) infinite; }
+  @keyframes blink { to { visibility: hidden; } }
   #replay-bar { padding: 6px 12px; border-bottom: 1px solid #1a3a1a; display: flex; gap: 6px; align-items: center; font-size: 10px; }
   #replay-slider { flex: 1; }
 
@@ -151,6 +156,10 @@
   <span class="status-pill pill-green"  id="units-pill">UNITS: 0/0</span>
   <span class="status-pill pill-green"  id="guns-pill">GUNS: 0</span>
   <div class="spacer"></div>
+  <span id="demo-wrap" style="display:none">
+    <button class="act" id="demo-btn" onclick="toggleDemo()" title="ป้อนข้อมูลสาธิตหลายหน่วยทั่วประเทศ">▶ DEMO</button>
+    <button class="act" id="demo-clear-btn" onclick="clearDemo()" title="ล้างข้อมูลสาธิต (หน่วย DEMO-*)">⌫</button>
+  </span>
   <span id="user-box"></span>
   <button class="act" id="logout-btn" onclick="logout()" style="display:none">ออกจากระบบ</button>
   <span class="status-pill pill-dim" id="clock"></span>
@@ -191,6 +200,89 @@
 
 <script>
 // ============================================================
+//  MGRS — self-contained lat/lon ⇄ MGRS (offline-safe, ไม่พึ่ง CDN)
+//  ฟอร์ม §1/§5 — โมดูลเดียวกับหน้า ศอย. (ทดสอบแล้ว round-trip < 1 m)
+// ============================================================
+const MGRS = (function(){
+  const A_=65,I_=73,O_=79,V_=86,Z_=90;
+  const COL='AJSAJS', ROW='AFAFAF';
+  const d2r=d=>d*Math.PI/180, r2d=r=>180*r/Math.PI;
+  function band(lat){ if(lat>84||lat<-80) return 'Z'; let i=Math.floor((lat+80)/8); if(i===20)i=19; return 'CDEFGHJKLMNPQRSTUVWX'.charAt(i); }
+  function LLtoUTM(lat,lon){
+    const a=6378137.0,e2=0.00669438,k0=0.9996,ep2=e2/(1-e2);
+    const la=d2r(lat),lo=d2r(lon);
+    let z=Math.floor((lon+180)/6)+1; if(lon===180)z=60;
+    if(lat>=56&&lat<64&&lon>=3&&lon<12)z=32;
+    if(lat>=72&&lat<84){ if(lon>=0&&lon<9)z=31; else if(lon<21)z=33; else if(lon<33)z=35; else if(lon<42)z=37; }
+    const lo0=d2r((z-1)*6-180+3);
+    const N=a/Math.sqrt(1-e2*Math.sin(la)*Math.sin(la));
+    const T=Math.tan(la)*Math.tan(la), C=ep2*Math.cos(la)*Math.cos(la), Ax=Math.cos(la)*(lo-lo0);
+    const M=a*((1-e2/4-3*e2*e2/64-5*e2*e2*e2/256)*la-(3*e2/8+3*e2*e2/32+45*e2*e2*e2/1024)*Math.sin(2*la)+(15*e2*e2/256+45*e2*e2*e2/1024)*Math.sin(4*la)-(35*e2*e2*e2/3072)*Math.sin(6*la));
+    const E=k0*N*(Ax+(1-T+C)*Ax*Ax*Ax/6+(5-18*T+T*T+72*C-58*ep2)*Math.pow(Ax,5)/120)+500000.0;
+    let Nn=k0*(M+N*Math.tan(la)*(Ax*Ax/2+(5-T+9*C+4*C*C)*Math.pow(Ax,4)/24+(61-58*T+T*T+600*C-330*ep2)*Math.pow(Ax,6)/720));
+    if(lat<0)Nn+=1e7;
+    return {e:E,n:Nn,z:z,b:band(lat)};
+  }
+  function setForZone(i){ let s=i%6; if(s===0)s=6; return s; }
+  function id100k(e,n,z){
+    const set=setForZone(z), col=Math.floor(e/100000), row=Math.floor(n/100000)%20, idx=set-1;
+    const co=COL.charCodeAt(idx), rO=ROW.charCodeAt(idx);
+    let ci=co+col-1, ri=rO+row, ro=false;
+    if(ci>Z_){ci=ci-Z_+A_-1;ro=true;}
+    if(ci===I_||(co<I_&&ci>I_)||((ci>I_||co<I_)&&ro))ci++;
+    if(ci===O_||(co<O_&&ci>O_)||((ci>O_||co<O_)&&ro)){ci++; if(ci===I_)ci++;}
+    if(ci>Z_)ci=ci-Z_+A_-1;
+    ro=false;
+    if(ri>V_){ri=ri-V_+A_-1;ro=true;}
+    if(ri===I_||(rO<I_&&ri>I_)||((ri>I_||rO<I_)&&ro))ri++;
+    if(ri===O_||(rO<O_&&ri>O_)||((ri>O_||rO<O_)&&ro)){ri++; if(ri===I_)ri++;}
+    if(ri>V_)ri=ri-V_+A_-1;
+    return String.fromCharCode(ci)+String.fromCharCode(ri);
+  }
+  function toMGRS(lat,lon,acc){
+    acc=acc||5;
+    if(isNaN(lat)||isNaN(lon)||lat>84||lat<-80) return null;
+    const u=LLtoUTM(lat,lon);
+    const se=('00000'+Math.floor(u.e)), sn=('00000'+Math.floor(u.n));
+    return u.z+u.b+id100k(u.e,u.n,u.z)+se.substr(se.length-5,acc)+sn.substr(sn.length-5,acc);
+  }
+  function format(s){ if(!s) return '--'; const m=s.match(/^(\d+[C-X])([A-Z]{2})(\d+)$/); if(!m) return s; const d=m[3],h=d.length/2; return m[1]+' '+m[2]+' '+d.substr(0,h)+' '+d.substr(h); }
+  const MINN={C:11,D:20,E:28,F:37,G:46,H:55,J:64,K:73,L:82,M:91,N:0,P:8,Q:17,R:26,S:35,T:44,U:53,V:62,W:70,X:79};
+  function eFromChar(c,set){ let cur=COL.charCodeAt(set-1),val=100000.0,rw=false,t=c.charCodeAt(0); while(cur!==t){cur++; if(cur===I_)cur++; if(cur===O_)cur++; if(cur>Z_){if(rw)throw 0; cur=A_; rw=true;} val+=100000.0;} return val; }
+  function nFromChar(c,set){ if(c>'V')throw 0; let cur=ROW.charCodeAt(set-1),val=0.0,rw=false,t=c.charCodeAt(0); while(cur!==t){cur++; if(cur===I_)cur++; if(cur===O_)cur++; if(cur>V_){if(rw)throw 0; cur=A_; rw=true;} val+=100000.0;} return val; }
+  function decode(str){
+    str=(str||'').replace(/ /g,'').toUpperCase();
+    if(str.length<5) throw 0;
+    let i=0,sb=''; while(i<2&&/[0-9]/.test(str.charAt(i))){sb+=str.charAt(i);i++;}
+    const z=parseInt(sb,10); if(!z||z<1||z>60)throw 0;
+    const b=str.charAt(i++); if('ABIOYZ'.indexOf(b)!==-1||b<'C'||b>'X')throw 0;
+    const hk=str.substring(i,i+2); i+=2; const set=setForZone(z);
+    let e=eFromChar(hk.charAt(0),set), n=nFromChar(hk.charAt(1),set);
+    while(n<MINN[b]*100000) n+=2000000;
+    const rem=str.length-i; if(rem%2!==0)throw 0;
+    const sep=rem/2; let acc=100000;
+    if(sep>0){ acc=100000/Math.pow(10,sep); e+=parseFloat(str.substr(i,sep))*acc; n+=parseFloat(str.substr(i+sep,sep))*acc; }
+    return {e:e,n:n,b:b,z:z,acc:acc};
+  }
+  function UTMtoLL(e,n,z,b){
+    const a=6378137.0,e2=0.00669438,k0=0.9996, e1=(1-Math.sqrt(1-e2))/(1+Math.sqrt(1-e2)), ep2=e2/(1-e2);
+    const x=e-500000.0; let y=n; if(b<'N')y-=1e7;
+    const lo0=(z-1)*6-180+3, M=y/k0, mu=M/(a*(1-e2/4-3*e2*e2/64-5*e2*e2*e2/256));
+    const p1=mu+(3*e1/2-27*e1*e1*e1/32)*Math.sin(2*mu)+(21*e1*e1/16-55*e1*e1*e1*e1/32)*Math.sin(4*mu)+(151*e1*e1*e1/96)*Math.sin(6*mu)+(1097*e1*e1*e1*e1/512)*Math.sin(8*mu);
+    const N1=a/Math.sqrt(1-e2*Math.sin(p1)*Math.sin(p1)),T1=Math.tan(p1)*Math.tan(p1),C1=ep2*Math.cos(p1)*Math.cos(p1),R1=a*(1-e2)/Math.pow(1-e2*Math.sin(p1)*Math.sin(p1),1.5),D=x/(N1*k0);
+    const lat=p1-(N1*Math.tan(p1)/R1)*(D*D/2-(5+3*T1+10*C1-4*C1*C1-9*ep2)*Math.pow(D,4)/24+(61+90*T1+298*C1+45*T1*T1-252*ep2-3*C1*C1)*Math.pow(D,6)/720);
+    const lon=(D-(1+2*T1+C1)*D*D*D/6+(5-2*C1+28*T1-3*C1*C1+8*ep2+24*T1*T1)*Math.pow(D,5)/120)/Math.cos(p1);
+    return {lat:r2d(lat), lon:lo0+r2d(lon)};
+  }
+  function toLatLon(str){ try{ const d=decode(str); return UTMtoLL(d.e+d.acc/2,d.n+d.acc/2,d.z,d.b); }catch(_){ return null; } }
+  return {toMGRS:toMGRS, format:format, toLatLon:toLatLon};
+})();
+function mgrsStr(lat,lon){
+  if(lat==null||lon==null||isNaN(+lat)||isNaN(+lon)||(+lat===0&&+lon===0)) return '--';
+  return MGRS.format(MGRS.toMGRS(+lat,+lon,5));
+}
+
+// ============================================================
 //  FDC National COP dashboard (STEP D2) — กิน API ของ ingest (D1)
 // ============================================================
 const KEY = (u, n) => `${u}/${n}`;
@@ -228,6 +320,39 @@ async function doLogin(e) {
 function logout() {
   TOKEN = ''; ME = null; localStorage.removeItem('fdc_token');
   location.reload();
+}
+
+// ── Demo mode (ปุ่ม DEMO) — เฉพาะ admin และเมื่อ DEMO_ENABLED=true ──
+let demoRunning = false;
+async function initDemoUI() {
+  if (!ME || ME.role !== 'admin') return;        // ปุ่มสาธิตให้เฉพาะ admin
+  try {
+    const s = await authFetch('/api/demo/status').then(r => r.json());
+    if (!s.enabled) return;                        // ปิดในระบบจริง → ไม่โชว์ปุ่ม
+    document.getElementById('demo-wrap').style.display = 'flex';
+    demoRunning = !!s.running;
+    renderDemoBtn();
+  } catch (e) {}
+}
+function renderDemoBtn() {
+  const b = document.getElementById('demo-btn');
+  b.innerHTML = demoRunning ? '■ DEMO <span class="blink">●</span>' : '▶ DEMO';
+  b.classList.toggle('on', demoRunning);
+  document.getElementById('demo-clear-btn').style.display = demoRunning ? 'none' : '';
+}
+async function toggleDemo() {
+  const b = document.getElementById('demo-btn'); b.disabled = true;
+  try {
+    const r = await authFetch('/api/demo/' + (demoRunning ? 'stop' : 'start'), { method: 'POST' });
+    if (r.ok) { demoRunning = !demoRunning; renderDemoBtn(); }
+  } catch (e) {} finally { b.disabled = false; }
+}
+async function clearDemo() {
+  if (!confirm('ลบข้อมูลสาธิตทั้งหมด (หน่วย DEMO-*) ?')) return;
+  try {
+    const r = await authFetch('/api/demo/clear', { method: 'POST' });
+    if (r.ok) location.reload();
+  } catch (e) { alert('ล้างข้อมูลไม่สำเร็จ'); }
 }
 function renderUser() {
   if (!ME) return;
@@ -278,7 +403,7 @@ function renderUnitList() {
   const list = Object.values(nodes).sort((a,b) => KEY(a.unit,a.node).localeCompare(KEY(b.unit,b.node)));
   el.innerHTML = list.map(n => {
     const k = KEY(n.unit, n.node);
-    const gpsTxt = (n.lat || n.lon) ? `${(+n.lat).toFixed(4)}, ${(+n.lon).toFixed(4)}` : 'NO FIX';
+    const gpsTxt = (n.lat || n.lon) ? mgrsStr(n.lat, n.lon) : 'NO FIX';
     return `<div class="unit-card ${n.online?'':'offline'} ${selected===k?'selected':''}" onclick="selectNode('${n.unit}','${n.node}')">
       <div class="unit-top">
         <span class="unit-name"><span class="dot ${n.online?'dot-on':'dot-off'}"></span>${n.node}</span>
@@ -294,14 +419,32 @@ function renderUnitList() {
 function renderNodeMarker(n) {
   const k = KEY(n.unit, n.node);
   setMarker('node:'+k, n.lat, n.lon, pinIcon('pin-node', n.online?'◆':'◇'),
-    `${n.node} (${n.unit})${n.name?' · '+n.name:''}`, () => selectNode(n.unit, n.node));
+    `${n.node} (${n.unit})${n.name?' · '+n.name:''}<br>${mgrsStr(n.lat, n.lon)}`, () => selectNode(n.unit, n.node));
 }
 function renderGunMarkers(k) {
   const g = guns[k] || {};
   Object.entries(g).forEach(([id, s]) => {
     setMarker(`gun:${k}:${id}`, s.lat, s.lon, pinIcon('pin-gun','▲'),
-      `GUN ${id} · ${k}`);
+      `GUN ${id} · ${k}<br>${mgrsStr(s.lat, s.lon)}`);
   });
+}
+
+// ── เป้าที่ ศอย. ปักหมุดไว้ (ยังไม่ยิง) — ขึ้น COP ตั้งแต่ปักหมุด ──
+const targets = {};     // "unit/node/id" → {unit,node,id,lat,lon,name}
+function applyTarget(unit, node, d) {
+  const id = d.id ?? d.tgt_id;
+  if (id == null) return;
+  const tk = `${unit}/${node}/${id}`;
+  const mid = 'watch:' + tk;
+  if (d.active === false) {            // ลบเป้า
+    if (markers[mid]) { map.removeLayer(markers[mid]); delete markers[mid]; }
+    delete targets[tk];
+    return;
+  }
+  targets[tk] = { unit, node, id, lat: d.lat, lon: d.lon, name: d.name };
+  setMarker(mid, d.lat, d.lon, pinIcon('pin-watch','⊕'),
+    `⊕ ${d.name || ('TGT ' + id)} · ${node} (${unit})<br>${mgrsStr(d.lat, d.lon)}`,
+    () => selectNode(unit, node));
 }
 
 // ── Select a node → zoom + load detail ──
@@ -338,6 +481,7 @@ function renderDetail() {
   let html = `<div class="kv">
       <div><span>สถานะ:</span> <b style="color:${n.online?'#39ff14':'#ff3c3c'}">${n.online?'ONLINE':'OFFLINE'}</b></div>
       <div><span>เห็นล่าสุด:</span> <b>${last}</b></div>
+      <div><span>MGRS ศอย.:</span> <b style="color:#7fff00">${(n.lat||n.lon)?mgrsStr(n.lat,n.lon):'NO FIX'}</b></div>
       <div><span>GPS ศอย.:</span> <b>${(n.lat||n.lon)?`${(+n.lat).toFixed(5)}, ${(+n.lon).toFixed(5)}`:'NO FIX'}</b></div>
       <div><span>ดาวเทียม/แบต:</span> <b>${n.sats??'--'} sats · ${n.bat??'--'}%</b></div>
     </div>`;
@@ -353,7 +497,7 @@ function renderDetail() {
           <span>HDG</span><b>${s.hdg??'--'}</b>
           <span>RSSI/SNR</span><b>${s.rssi??'--'}/${s.snr??'--'}</b>
         </div>
-        <div class="grid2"><span>พิกัด</span><b>${(s.lat||s.lon)?`${(+s.lat).toFixed(4)},${(+s.lon).toFixed(4)}`:'—'}</b></div>
+        <div class="grid2"><span>MGRS</span><b style="color:#7fff00">${(s.lat||s.lon)?mgrsStr(s.lat,s.lon):'—'}</b></div>
       </div>`;
     }).join('');
   } else {
@@ -405,7 +549,7 @@ async function loadFireMissions(unit, node) {
     if (!box) return;
     box.innerHTML = arr.length ? arr.map(m => `<div class="kv">
         <div><span>${new Date(m.time).toLocaleTimeString()}</span> · <b>GUN ${m.gun_id??'?'}</b></div>
-        <div><span>เป้า:</span> <b>${m.tgt_lat?`${(+m.tgt_lat).toFixed(4)},${(+m.tgt_lon).toFixed(4)}`:'—'}</b></div>
+        <div><span>เป้า:</span> <b style="color:#7fff00">${m.tgt_lat?mgrsStr(m.tgt_lat,m.tgt_lon):'—'}</b></div>
         <div><span>AZ/EL:</span> <b>${m.az_mils??'--'} / ${m.el_mils??'--'} mil</b> · <span>CHG</span> <b>${m.charge??'--'}</b></div>
       </div>`).join('') : '<div class="empty">ไม่มีภารกิจยิง</div>';
   } catch(e) {}
@@ -413,14 +557,21 @@ async function loadFireMissions(unit, node) {
 
 // ── Live feed ──
 const FEED_MAX = 200;
+// สร้างแถว feed แบบปลอดภัย (textContent ต่อ span) — กัน XSS จากข้อมูล MQTT/DB (node/msg)
+function feedRow(timeStr, node, msg, cls) {
+  const div = document.createElement('div');
+  div.className = 'ev ' + (cls || '');
+  const mk = (c, txt) => { const s = document.createElement('span'); s.className = c; s.textContent = txt; return s; };
+  div.append(mk('t', timeStr), document.createTextNode(' '),
+             mk('u', node || ''), document.createTextNode(' '),
+             mk('m', msg || ''));
+  return div;
+}
 function addFeed({time, unit, node, level, msg, cls}) {
   if (replay.on) return;     // ระหว่าง replay หยุดรับสด
   const box = document.getElementById('feed-entries');
-  const div = document.createElement('div');
-  div.className = 'ev ' + (cls||level||'');
   const t = new Date((time||Date.now()/1000)*1000).toLocaleTimeString();
-  div.innerHTML = `<span class="t">${t}</span> <span class="u">${node||''}</span> <span class="m">${msg||''}</span>`;
-  box.prepend(div);
+  box.prepend(feedRow(t, node, msg, cls || level || ''));
   while (box.children.length > FEED_MAX) box.removeChild(box.lastChild);
 }
 
@@ -438,7 +589,11 @@ function connectWS() {
   ws.onerror = () => ws.close();
   ws.onmessage = (e) => {
     let m; try { m = JSON.parse(e.data); } catch { return; }
-    if (m.kind === 'snapshot') { (m.nodes||[]).forEach(applyNode); renderUnitList(); fitAll(); return; }
+    if (m.kind === 'snapshot') {
+      (m.nodes||[]).forEach(applyNode);
+      (m.targets||[]).forEach(t => applyTarget(t.unit, t.node, t));
+      renderUnitList(); fitAll(); return;
+    }
     handleLive(m);
   };
 }
@@ -462,8 +617,12 @@ function handleLive(m) {
     const id = (m.topic.match(/\/gun\/([^/]+)\/status/)||[])[1] || d.id;
     if (id != null) { (guns[k] = guns[k]||{})[id] = Object.assign({gun_id:id}, d); renderGunMarkers(k); }
   } else if (m.kind === 'fire_mission') {
-    setMarker('tgt:'+k, d.tgt_lat, d.tgt_lon, pinIcon('pin-tgt','✸'), `🎯 ${m.node} GUN ${d.gun??''}`);
+    setMarker('tgt:'+k, d.tgt_lat, d.tgt_lon, pinIcon('pin-tgt','✸'), `🎯 ${m.node} GUN ${d.gun??''}<br>${mgrsStr(d.tgt_lat, d.tgt_lon)}`);
     addFeed({ time: m.time, node: m.node, msg: `🎯 FIRE MISSION GUN ${d.gun??'?'} → AZ ${d.az_mils??'--'} EL ${d.el_mils??'--'} CHG ${d.charge??'--'}`, cls: 'fire' });
+  } else if (m.kind === 'target') {
+    applyTarget(m.unit, m.node, d);
+    addFeed({ time: m.time, node: m.node,
+      msg: `⊕ ${d.active===false ? 'ลบเป้า' : 'ปักเป้า'} ${d.name || d.id || ''}`.trim() });
   } else if (m.kind === 'event') {
     addFeed({ time: m.time, node: m.node, level: d.level, msg: d.msg });
   }
@@ -505,14 +664,12 @@ function rpRender(i) {
   const box = document.getElementById('feed-entries'); box.innerHTML = '';
   const upto = replay.items.slice(0, i+1);
   upto.slice(-FEED_MAX).reverse().forEach(it => {
-    const div = document.createElement('div'); div.className = 'ev ' + (it.kind==='fire'?'fire':it.kind);
-    div.innerHTML = `<span class="t">${new Date(it.t).toLocaleTimeString()}</span> <span class="u">${it.node||''}</span> <span class="m">${it.msg||''}</span>`;
-    box.appendChild(div);
+    box.appendChild(feedRow(new Date(it.t).toLocaleTimeString(), it.node, it.msg, it.kind==='fire'?'fire':it.kind));
   });
   const cur = replay.items[i];
   document.getElementById('rp-time').textContent = cur ? new Date(cur.t).toLocaleString() : '--';
   if (cur && cur.kind==='fire' && (cur.lat||cur.lon)) {
-    setMarker('replay-tgt', cur.lat, cur.lon, pinIcon('pin-tgt','✸'), `REPLAY 🎯 ${cur.node}`);
+    setMarker('replay-tgt', cur.lat, cur.lon, pinIcon('pin-tgt','✸'), `REPLAY 🎯 ${cur.node}<br>${mgrsStr(cur.lat, cur.lon)}`);
   }
 }
 function rpSeek(v) { rpRender(v); }
@@ -529,10 +686,13 @@ function rpPlayPause() {
 async function start() {
   setWs('init');
   renderUser();
+  initDemoUI();
   try {
     // /api/nodes ส่งสถานะ ศอย. + GPS ล่าสุด (lat/lon) มาด้วยในแถวเดียว
     const arr = await authFetch('/api/nodes').then(r=>r.json());
     arr.forEach(applyNode);
+    const tgts = await authFetch('/api/targets').then(r=>r.json());
+    tgts.forEach(t => applyTarget(t.unit, t.node, t));
     renderUnitList(); refreshCounters(); fitAll();
   } catch(e) { return; }   // 401 → showLogin() ถูกเรียกใน authFetch แล้ว
   connectWS();

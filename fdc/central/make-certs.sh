@@ -25,7 +25,7 @@ gen_ca() {
 gen_cert() {
   local name="$1" cn="$2" server="${3:-}"
   openssl genrsa -out "$CERTS/$name.key" 2048
-  openssl req -new -key "$CERTS/$name.key" -subj "/O=FDC/CN=$cn" \
+  openssl req -new -key "$CERTS/$name.key" -subj "/O=FDC/CN=${cn//\//\\/}" \
     -out "$CERTS/$name.csr"
   local ext="$CERTS/$name.ext"
   if [ -n "$server" ]; then
@@ -42,6 +42,7 @@ gen_cert() {
 
 gen_ca
 gen_cert broker "${BROKER_CN:-localhost}" server   # CN = ชื่อ host ของ broker (ตรวจ hostname)
+chmod 644 "$CERTS/broker.key"
 gen_cert ingest "central-ingest"                    # client ของศูนย์
 
 for cn in "$@"; do

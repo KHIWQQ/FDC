@@ -84,6 +84,7 @@ WebSocket ส่ง token ผ่าน query: `/ws?token=<jwt>`
 | GET  | `/api/health` | สาธารณะ |
 | GET  | `/api/nodes` | view (กรองตามขอบเขต) |
 | GET  | `/api/nodes/{unit}/{node}/guns` | view (ในขอบเขต) |
+| GET  | `/api/targets` | view (กรองตามขอบเขต) — เป้าที่ ศอย. ปักหมุดไว้ (ยังไม่ยิง) |
 | GET  | `/api/fire_missions?limit=&unit=&node=` | view (ล็อกขอบเขตอัตโนมัติ) |
 | GET  | `/api/events?limit=&unit=&node=` | view (ล็อกขอบเขตอัตโนมัติ) |
 | GET  | `/api/audit?limit=` | **admin** |
@@ -97,6 +98,14 @@ WebSocket ส่ง token ผ่าน query: `/ws?token=<jwt>`
 
 คำสั่ง downlink ใช้ canonical/รูปซองเดียวกับ `central/sign_command.py` และ
 `FdcUplink._verify_command()` — เซ็น HMAC-SHA256 + seq (atomic จาก DB) + timestamp กัน replay
+
+## เป้าที่ปักหมุด (target sharing)
+
+ศอย. ปักหมุดเป้า (`POST /api/target` ฝั่ง ศอย.) → uplink ขึ้นศูนย์ทันที **ตั้งแต่ปักหมุด
+(ก่อนยิง)** บน topic `fdc/<unit>/<node>/target/<id>` (retained = current state; payload
+`active:false` = ลบ). ที่ศูนย์ `mqtt_ingest` → ตาราง `targets` → push WebSocket →
+dashboard โชว์หมุด ⊕ สีเหลืองอำพัน (แยกจาก 🎯 ภารกิจยิงที่เกิดขึ้นจริง). โหลดสถานะเดิม
+ผ่าน `GET /api/targets` + รวมใน WebSocket snapshot (กรองตามขอบเขต RBAC เหมือน telemetry อื่น)
 
 ## รายงาน / AAR (STEP D4)
 
